@@ -1,6 +1,6 @@
 import React from 'react';
-import { CircleROI, EllipseData, ProcessingMode } from '../types';
-import { Trash2, Calculator, Download, Upload, Sliders, TableProperties, Wand2, X } from 'lucide-react';
+import { CircleROI, EllipseData, ProcessingMode, CalibrationResult } from '../types';
+import { Trash2, Calculator, Download, Upload, Sliders, TableProperties, Wand2, X, RotateCcw, ScanLine, Eye } from 'lucide-react';
 
 interface SidebarProps {
   rois: CircleROI[];
@@ -16,6 +16,8 @@ interface SidebarProps {
   setRois: React.Dispatch<React.SetStateAction<CircleROI[]>>;
   onViewData: () => void;
   onDeleteRoi: (id: number) => void;
+  calibration: CalibrationResult | null;
+  onViewSector: () => void;
 }
 
 export const Sidebar: React.FC<SidebarProps> = ({
@@ -32,6 +34,8 @@ export const Sidebar: React.FC<SidebarProps> = ({
   setRois,
   onViewData,
   onDeleteRoi,
+  calibration,
+  onViewSector,
 }) => {
   const activeRoi = activeRoiId ? rois.find(r => r.id === activeRoiId) : null;
   const [threshold, setThreshold] = React.useState(128);
@@ -118,7 +122,6 @@ export const Sidebar: React.FC<SidebarProps> = ({
                 Auto Detection
              </label>
              <div className="bg-slate-900 rounded-lg p-3 border border-slate-700 space-y-3">
-                {/* Threshold Control */}
                 <div className="space-y-1">
                     <div className="flex justify-between text-xs text-slate-300">
                         <span>Threshold</span>
@@ -133,8 +136,6 @@ export const Sidebar: React.FC<SidebarProps> = ({
                         className="w-full h-2 bg-slate-700 rounded-lg appearance-none cursor-pointer accent-purple-500"
                     />
                 </div>
-
-                {/* Radius Filter */}
                 <div className="space-y-1 pt-1">
                    <div className="flex justify-between text-xs text-slate-300 mb-1">
                       <span>Radius Range (px)</span>
@@ -164,7 +165,6 @@ export const Sidebar: React.FC<SidebarProps> = ({
                       </div>
                    </div>
                 </div>
-
                 <div className="pt-2">
                   <button
                       onClick={() => onAutoDetect(threshold, minRadius, maxRadius)}
@@ -177,20 +177,44 @@ export const Sidebar: React.FC<SidebarProps> = ({
              </div>
         </div>
 
-        {/* Status */}
-        <div className="bg-slate-900 rounded-lg p-3 border border-slate-700 mt-2">
-            <div className="flex justify-between items-center mb-2">
-                <span className="text-sm font-medium text-slate-300">Current ROIs</span>
-                <span className="text-sm font-bold text-blue-400">
-                    {rois.length}
-                </span>
+        {/* Sector Calibration Analysis */}
+        {ellipses.length > 2 && (
+            <div className="space-y-2 border-t border-slate-700 pt-4 animate-in fade-in">
+                <label className="block text-sm font-medium text-slate-300 flex items-center gap-2">
+                    <ScanLine className="w-4 h-4 text-emerald-400" />
+                    Sector Analysis
+                </label>
+                <div className="bg-slate-900 rounded-lg p-3 border border-slate-700">
+                    {calibration?.isValid ? (
+                        <div className="space-y-2">
+                            <div className="flex justify-between items-center border-b border-slate-800 pb-2">
+                                <span className="text-xs text-slate-400">Rotation Center X</span>
+                                <span className="font-mono text-sm font-bold text-emerald-400">
+                                    {Math.round(calibration.rotationCenterX)}
+                                </span>
+                            </div>
+                             <div className="flex justify-between items-center">
+                                <span className="text-xs text-slate-400">Model Fit (R²)</span>
+                                <span className={`font-mono text-xs font-bold ${calibration.rSquared > 0.9 ? 'text-green-400' : 'text-yellow-400'}`}>
+                                    {calibration.rSquared.toFixed(3)}
+                                </span>
+                            </div>
+                            <button 
+                                onClick={onViewSector}
+                                className="w-full mt-2 flex items-center justify-center gap-1.5 bg-emerald-900/30 hover:bg-emerald-900/50 text-emerald-400 border border-emerald-900/50 py-1.5 rounded text-xs transition-colors"
+                            >
+                                <Eye className="w-3.5 h-3.5" />
+                                Show Result Image
+                            </button>
+                        </div>
+                    ) : (
+                        <p className="text-xs text-slate-500 text-center py-2">
+                            Data insufficient or noisy for sector analysis.
+                        </p>
+                    )}
+                </div>
             </div>
-            {rois.length === 0 && (
-                 <p className="text-xs text-slate-500">
-                    Use Auto Detect or click on the image manually.
-                 </p>
-            )}
-        </div>
+        )}
 
         {/* Selected ROI Settings */}
         {activeRoi && (
@@ -279,9 +303,6 @@ export const Sidebar: React.FC<SidebarProps> = ({
                      <span className="flex items-center gap-1">
                         Ry: <span className="font-mono text-emerald-400/80">{e.ry.toFixed(1)}</span>
                      </span>
-                     <span className="flex items-center gap-1">
-                        θ: <span className="font-mono text-purple-400/80">{(e.angle * 180 / Math.PI).toFixed(1)}°</span>
-                     </span>
                   </div>
                 </div>
               ))}
@@ -317,7 +338,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
           onClick={onClear}
           className="w-full flex items-center justify-center gap-2 bg-slate-800 hover:bg-red-900/30 hover:text-red-400 text-slate-400 py-2 px-4 rounded-lg text-sm font-medium transition-colors border border-slate-700 hover:border-red-900/50"
         >
-          <Trash2 className="w-4 h-4" />
+          <RotateCcw className="w-4 h-4" />
           Clear All
         </button>
       </div>

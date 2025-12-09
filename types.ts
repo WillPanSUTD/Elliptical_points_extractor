@@ -15,3 +15,11 @@ export interface EllipseData {
 }
 
 export type ProcessingMode = 'dark' | 'light';
+
+export interface CalibrationResult {
+  rotationCenterX: number; // The X coordinate of the sector origin (usually negative)
+  slope: number; // The rate of change of Aspect Ratio vs X
+  intercept: number;
+  rSquared: number; // Quality of fit (0-1)
+  isValid: boolean;
+}

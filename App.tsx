@@ -1,18 +1,32 @@
-import React, { useState, useRef } from 'react';
+import React, { useState, useRef, useEffect } from 'react';
 import { Sidebar } from './components/Sidebar';
 import { RoiCanvas } from './components/RoiCanvas';
 import { DataModal } from './components/DataModal';
-import { CircleROI, EllipseData, ProcessingMode } from './types';
+import { SectorViewModal } from './components/SectorViewModal';
+import { CircleROI, EllipseData, ProcessingMode, CalibrationResult } from './types';
 import { extractEllipseFromROI, autoDetectEllipses } from './utils/imageProcessing';
+import { calculateSectorCalibration } from './utils/calibration';
 
 export default function App() {
   const [imageSrc, setImageSrc] = useState<string | null>(null);
   const [rois, setRois] = useState<CircleROI[]>([]);
   const [ellipses, setEllipses] = useState<EllipseData[]>([]);
+  const [calibration, setCalibration] = useState<CalibrationResult | null>(null);
   const [mode, setMode] = useState<ProcessingMode>('dark');
   const [activeRoiId, setActiveRoiId] = useState<number | null>(null);
   const [isDataModalOpen, setIsDataModalOpen] = useState(false);
+  const [isSectorModalOpen, setIsSectorModalOpen] = useState(false);
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
+
+  // Run calibration whenever ellipses change
+  useEffect(() => {
+    if (ellipses.length >= 3) {
+      const result = calculateSectorCalibration(ellipses);
+      setCalibration(result);
+    } else {
+      setCalibration(null);
+    }
+  }, [ellipses]);
 
   const handleImageUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
@@ -23,6 +37,7 @@ export default function App() {
         setRois([]);
         setEllipses([]);
         setActiveRoiId(null);
+        setCalibration(null);
       };
       reader.readAsDataURL(file);
     }
@@ -32,6 +47,7 @@ export default function App() {
     setRois([]);
     setEllipses([]);
     setActiveRoiId(null);
+    setCalibration(null);
   };
 
   const handleDeleteRoi = (id: number) => {
@@ -45,8 +61,6 @@ export default function App() {
   const handleProcess = () => {
     if (!imageSrc) return;
 
-    // Create a clean offscreen canvas to extract data from.
-    // This prevents the ROI overlays (circles, numbers, handles) from interfering with the image processing.
     const img = new Image();
     img.src = imageSrc;
     img.onload = () => {
@@ -80,7 +94,6 @@ export default function App() {
       
       tempCtx.drawImage(img, 0, 0);
 
-      // Run auto detection with radius filters
       const { ellipses: detectedEllipses, rois: generatedRois } = autoDetectEllipses(
         tempCtx, 
         mode, 
@@ -101,14 +114,28 @@ export default function App() {
   const handleExport = () => {
     if (ellipses.length === 0) return;
     
-    // Export standard JSON
-    const dataStr = JSON.stringify(ellipses, null, 2);
+    // Add calibration data to export if valid
+    const exportData = ellipses.map(e => {
+        let extra = {};
+        if (calibration && calibration.isValid) {
+            const R = e.cx - calibration.rotationCenterX;
+            const Arc = e.cy * R;
+            extra = {
+                physicalRadius: R,
+                physicalArc: Arc,
+                rotationCenterX: calibration.rotationCenterX
+            };
+        }
+        return { ...e, ...extra };
+    });
+
+    const dataStr = JSON.stringify(exportData, null, 2);
     const blob = new Blob([dataStr], { type: 'application/json' });
     const url = URL.createObjectURL(blob);
     
     const a = document.createElement('a');
     a.href = url;
-    a.download = 'elliptical_points.json';
+    a.download = 'elliptical_points_calibrated.json';
     document.body.appendChild(a);
     a.click();
     document.body.removeChild(a);
@@ -117,7 +144,6 @@ export default function App() {
 
   return (
     <div className="flex h-screen w-screen bg-slate-950 text-slate-100 font-sans overflow-hidden">
-      {/* Main Canvas Area */}
       <div className="flex-1 h-full relative">
         <RoiCanvas
           imageSrc={imageSrc}
@@ -130,7 +156,6 @@ export default function App() {
           onDeleteRoi={handleDeleteRoi}
         />
         
-        {/* Instruction Overlay when image exists but no ROIs */}
         {imageSrc && rois.length === 0 && (
           <div className="absolute top-4 left-1/2 transform -translate-x-1/2 bg-slate-900/80 backdrop-blur px-4 py-2 rounded-full border border-slate-700 text-sm pointer-events-none transition-opacity duration-500 shadow-xl z-10">
             Click points manually or use "Auto Detect" in the sidebar
@@ -138,7 +163,6 @@ export default function App() {
         )}
       </div>
 
-      {/* Sidebar Controls */}
       <Sidebar
         rois={rois}
         setRois={setRois}
@@ -153,13 +177,22 @@ export default function App() {
         activeRoiId={activeRoiId}
         onViewData={() => setIsDataModalOpen(true)}
         onDeleteRoi={handleDeleteRoi}
+        calibration={calibration}
+        onViewSector={() => setIsSectorModalOpen(true)}
       />
 
-      {/* Data Modal Overlay */}
       <DataModal 
         isOpen={isDataModalOpen} 
         onClose={() => setIsDataModalOpen(false)} 
         ellipses={ellipses} 
+        calibration={calibration}
+      />
+      
+      <SectorViewModal 
+        isOpen={isSectorModalOpen} 
+        onClose={() => setIsSectorModalOpen(false)} 
+        imageSrc={imageSrc} 
+        calibration={calibration}
       />
     </div>
   );
