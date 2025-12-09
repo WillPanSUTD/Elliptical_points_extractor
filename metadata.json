@@ -1,0 +1,5 @@
+{
+  "name": "Ellipse ROI Extractor",
+  "description": "A tool to manually draw circular Regions of Interest (ROIs) on an image and automatically extract fitted elliptical feature points from within those regions based on pixel intensity.",
+  "requestFramePermissions": []
+}
