@@ -10,12 +10,13 @@ export const calculateSectorCalibration = (ellipses: EllipseData[]): Calibration
     return { rotationCenterX: 0, slope: 0, intercept: 0, rSquared: 0, isValid: false };
   }
 
-  // Prepare data points: X = cx, Y = Aspect Ratio (rx / ry)
-  // We use rx/ry because in a sector scan:
-  // rx (radial width) is roughly constant for a fixed object size.
-  // ry (azimuthal height) shrinks as Radius increases (ry ~ 1/R).
-  // Therefore, rx/ry scales linearly with Radius (R).
-  // Since R = x - x_center, rx/ry is linear with x.
+  // Prepare data points: X = cx, Y = Aspect Ratio
+  // We used to use rx/ry. However, imageProcessing returns rx as Major Axis and ry as Minor Axis (sorted by size).
+  // If the ellipses are tall (dy > dx), rx is Height, ry is Width.
+  // Then rx/ry > 1.
+  // But physically in a sector scan, Aspect Ratio (Width/Height) should be proportional to R.
+  // If R is small/slow scan, Width/Height < 1.
+  // To fix this, we calculate the Bounding Box Width and Height.
   
   const n = ellipses.length;
   let sumX = 0;
@@ -26,7 +27,19 @@ export const calculateSectorCalibration = (ellipses: EllipseData[]): Calibration
 
   ellipses.forEach(e => {
     const x = e.cx;
-    const y = e.rx / e.ry;
+    
+    // Calculate projected width and height (Bounding Box)
+    // Width = 2 * sqrt( (rx * cos theta)^2 + (ry * sin theta)^2 )
+    // Height = 2 * sqrt( (rx * sin theta)^2 + (ry * cos theta)^2 )
+    // This is robust against 90 degree rotations.
+    
+    const cosT = Math.cos(e.angle);
+    const sinT = Math.sin(e.angle);
+    
+    const w = 2 * Math.sqrt(Math.pow(e.rx * cosT, 2) + Math.pow(e.ry * sinT, 2));
+    const h = 2 * Math.sqrt(Math.pow(e.rx * sinT, 2) + Math.pow(e.ry * cosT, 2));
+    
+    const y = w / h; // Aspect Ratio (Width / Height)
     
     sumX += x;
     sumY += y;
@@ -50,7 +63,7 @@ export const calculateSectorCalibration = (ellipses: EllipseData[]): Calibration
   // Handle perfect fit case or numerical noise
   const rSquared = ssTotal === 0 ? 0 : 1 - (ssRes / ssTotal);
 
-  // Rotation Center is where Aspect Ratio would be 0 (Infinite Height / Zero Radius)
+  // Rotation Center is where Aspect Ratio would be 0
   // 0 = slope * x + intercept => x = -intercept / slope
   let rotationCenterX = 0;
   if (Math.abs(slope) > 1e-10) {
@@ -59,10 +72,10 @@ export const calculateSectorCalibration = (ellipses: EllipseData[]): Calibration
 
   return {
     rotationCenterX,
-    slope,
+    slope, // slope corresponds to Radians per Pixel (Y-axis) roughly
     intercept,
-    rSquared: Math.abs(rSquared), // Ensure positive
-    isValid: Math.abs(rSquared) > 0.6 // Basic validity check
+    rSquared: Math.abs(rSquared),
+    isValid: Math.abs(rSquared) > 0.6 
   };
 };
 
@@ -101,9 +114,17 @@ export const generateSectorImage = async (
         const srcData = srcCtx.getImageData(0, 0, img.width, img.height);
 
         // 2. Calculate Geometry
-        // Slope corresponds to Radians per Y-Pixel (approximately)
-        // Total Angle Span = Slope * Image Height
-        // If slope is negative, we take absolute value (direction handled by sign)
+        // Slope corresponds to Radians per Pixel (Y-axis)
+        // Note: AR = Width/Height. 
+        // Width = 1 * R_radial. Height = R_radial * dTheta/dPixelY.
+        // AR = dTheta/dPixelY * R ?? No.
+        // ArcLength = R * dTheta. Height_px = ArcLength / (1?).
+        // Actually: AR = Width_px / Height_px.
+        // Width_px ~ Constant (Radial resolution).
+        // Height_px ~ 1/R.
+        // AR ~ R. Slope is d(AR)/dx.
+        // Slope relates strictly to angular resolution.
+        
         const slope = Math.abs(calibration.slope); 
         const totalAngle = slope * img.height; 
         
@@ -116,34 +137,17 @@ export const generateSectorImage = async (
         const rMax = img.width - rotationCenterX;
 
         // Bounding Box Calculation for the Output Canvas
-        // Fan centers at (0,0) in polar space.
-        // We scan theta from -totalAngle/2 to +totalAngle/2
-        // We essentially want to draw the arc.
-        
-        // To keep it simple and upright-ish:
-        // Let's assume the fan opens towards the right (Positive X) like typical math polar coords
-        // if we mapped X_source -> R, Y_source -> Theta.
-        
-        // We need to find the bounding box of the fan shape in Cartesian (u, v) space.
-        // u = R * cos(theta), v = R * sin(theta)
-        // theta range: [-totalAngle/2, totalAngle/2]
-        // R range: [rMin, rMax]
-        
-        // Corners of the annular sector:
         const corners = [];
         const thetas = [-totalAngle/2, totalAngle/2];
         const radii = [rMin, rMax];
         
-        // Extreme points for bounding box
         for(let r of radii) {
             for(let t of thetas) {
                 corners.push({ u: r * Math.cos(t), v: r * Math.sin(t) });
             }
         }
-        // Also check arc extreme (max X is at theta=0 if included)
         if (thetas[0] < 0 && thetas[1] > 0) {
-            corners.push({ u: rMax, v: 0 }); // Max extents right
-            // corners.push({ u: rMin, v: 0 }); // Min extents right (hole)
+            corners.push({ u: rMax, v: 0 }); 
         }
 
         let minU = Infinity, maxU = -Infinity, minV = Infinity, maxV = -Infinity;
@@ -168,7 +172,6 @@ export const generateSectorImage = async (
         
         const outImageData = outCtx.createImageData(outWidth, outHeight);
         
-        // Offset to center the sector in the canvas
         const offU = -minU + padding;
         const offV = -minV + padding;
 
@@ -178,36 +181,19 @@ export const generateSectorImage = async (
         const outData = outImageData.data;
 
         // 4. Inverse Mapping Loop
-        // Iterate over every pixel in output canvas (u_out, v_out)
-        // Convert to Polar (r, theta)
-        // Check if in valid range
-        // Map to Source (x, y)
-        // Bilinear Sample
-
         for (let py = 0; py < outHeight; py++) {
             for (let px = 0; px < outWidth; px++) {
-                // Coordinate relative to fan origin
                 const u = px - offU;
                 const v = py - offV;
                 
-                // Polar conversion
                 const r = Math.sqrt(u*u + v*v);
                 let theta = Math.atan2(v, u);
 
-                // Check bounds
                 if (r >= rMin && r <= rMax && theta >= -totalAngle/2 && theta <= totalAngle/2) {
                     
-                    // Map back to Source X
-                    // r = x - rotationCenterX  => x = r + rotationCenterX
                     const srcX = r + rotationCenterX;
-
-                    // Map back to Source Y
-                    // theta = slope * (y - height/2)  (Centering theta around middle of image height)
-                    // y = theta / slope + height/2
                     const srcY = (theta / slope) + (srcH / 2);
 
-                    // Nearest Neighbor Sampling (for speed/simplicity)
-                    // Check bounds
                     if (srcX >= 0 && srcX < srcW && srcY >= 0 && srcY < srcH) {
                         const ix = Math.floor(srcX);
                         const iy = Math.floor(srcY);
@@ -217,7 +203,7 @@ export const generateSectorImage = async (
                         outData[outIdx] = data[srcIdx];
                         outData[outIdx + 1] = data[srcIdx + 1];
                         outData[outIdx + 2] = data[srcIdx + 2];
-                        outData[outIdx + 3] = 255; // Alpha
+                        outData[outIdx + 3] = 255; 
                     }
                 }
             }

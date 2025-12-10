@@ -1,7 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import { CalibrationResult } from '../types';
 import { generateSectorImage } from '../utils/calibration';
-import { X, Loader2, Maximize2 } from 'lucide-react';
+import { X, Loader2, Maximize2, Download } from 'lucide-react';
 
 interface SectorViewModalProps {
   isOpen: boolean;
@@ -39,6 +39,17 @@ export const SectorViewModal: React.FC<SectorViewModalProps> = ({
     }
   }, [isOpen, imageSrc, calibration]);
 
+  const handleSave = () => {
+    if (resultSrc) {
+        const a = document.createElement('a');
+        a.href = resultSrc;
+        a.download = 'sector_corrected_image.png';
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+    }
+  };
+
   if (!isOpen) return null;
 
   return (
@@ -53,12 +64,23 @@ export const SectorViewModal: React.FC<SectorViewModalProps> = ({
                    Transformed view based on calculated geometry.
                 </p>
             </div>
-            <button 
-                onClick={onClose} 
-                className="bg-black/50 hover:bg-slate-700 text-white p-2 rounded-full backdrop-blur-md transition pointer-events-auto"
-            >
-                <X className="w-6 h-6" />
-            </button>
+            <div className="flex gap-2 pointer-events-auto">
+                 {resultSrc && (
+                    <button
+                        onClick={handleSave}
+                        className="bg-emerald-600 hover:bg-emerald-500 text-white p-2 rounded-full shadow-lg transition flex items-center gap-2 px-4"
+                    >
+                        <Download className="w-4 h-4" />
+                        <span className="text-sm font-medium">Save Image</span>
+                    </button>
+                 )}
+                <button 
+                    onClick={onClose} 
+                    className="bg-black/50 hover:bg-slate-700 text-white p-2 rounded-full backdrop-blur-md transition"
+                >
+                    <X className="w-6 h-6" />
+                </button>
+            </div>
         </div>
 
         {/* Content */}
