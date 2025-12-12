@@ -1,6 +1,6 @@
 import React from 'react';
-import { CircleROI, EllipseData, ProcessingMode, CalibrationResult } from '../types';
-import { Trash2, Calculator, Download, Upload, Sliders, TableProperties, Wand2, X, RotateCcw, ScanLine, Eye } from 'lucide-react';
+import { CircleROI, EllipseData, ProcessingMode, CalibrationResult, CalibrationMethod } from '../types';
+import { Trash2, Calculator, Download, Upload, Sliders, TableProperties, Wand2, X, RotateCcw, ScanLine, Eye, LineChart, ChevronDown, FileJson, FileUp, Repeat, Percent } from 'lucide-react';
 
 interface SidebarProps {
   rois: CircleROI[];
@@ -18,6 +18,16 @@ interface SidebarProps {
   onDeleteRoi: (id: number) => void;
   calibration: CalibrationResult | null;
   onViewSector: () => void;
+  calibrationMethod: CalibrationMethod;
+  setCalibrationMethod: (m: CalibrationMethod) => void;
+  onViewChart: () => void;
+  hasImage: boolean;
+  onExportCalibration: () => void;
+  onImportCalibration: (e: React.ChangeEvent<HTMLInputElement>) => void;
+  iterIterations: number;
+  setIterIterations: (n: number) => void;
+  iterPercentage: number;
+  setIterPercentage: (n: number) => void;
 }
 
 export const Sidebar: React.FC<SidebarProps> = ({
@@ -36,6 +46,16 @@ export const Sidebar: React.FC<SidebarProps> = ({
   onDeleteRoi,
   calibration,
   onViewSector,
+  calibrationMethod,
+  setCalibrationMethod,
+  onViewChart,
+  hasImage,
+  onExportCalibration,
+  onImportCalibration,
+  iterIterations,
+  setIterIterations,
+  iterPercentage,
+  setIterPercentage
 }) => {
   const activeRoi = activeRoiId ? rois.find(r => r.id === activeRoiId) : null;
   const [threshold, setThreshold] = React.useState(128);
@@ -178,19 +198,99 @@ export const Sidebar: React.FC<SidebarProps> = ({
         </div>
 
         {/* Sector Calibration Analysis */}
-        {ellipses.length > 2 && (
+        {hasImage && (
             <div className="space-y-2 border-t border-slate-700 pt-4 animate-in fade-in">
-                <label className="block text-sm font-medium text-slate-300 flex items-center gap-2">
-                    <ScanLine className="w-4 h-4 text-emerald-400" />
-                    Sector Analysis
-                </label>
-                <div className="bg-slate-900 rounded-lg p-3 border border-slate-700">
+                <div className="flex items-center justify-between">
+                    <label className="block text-sm font-medium text-slate-300 flex items-center gap-2">
+                        <ScanLine className="w-4 h-4 text-emerald-400" />
+                        Sector Calibration
+                    </label>
+                    <div className="flex gap-1">
+                         <label className="p-1.5 hover:bg-slate-700 rounded text-slate-400 hover:text-white transition cursor-pointer" title="Import Model JSON">
+                            <FileUp className="w-4 h-4" />
+                            <input type="file" accept=".json" onChange={onImportCalibration} className="hidden" />
+                         </label>
+                         {calibration?.isValid && (
+                            <button onClick={onExportCalibration} className="p-1.5 hover:bg-slate-700 rounded text-slate-400 hover:text-white transition" title="Export Model JSON">
+                                <FileJson className="w-4 h-4" />
+                            </button>
+                         )}
+                         {ellipses.length > 2 && (
+                            <button 
+                                 onClick={onViewChart}
+                                 className="p-1.5 hover:bg-slate-700 rounded text-blue-400 transition"
+                                 title="View Calibration Plot"
+                            >
+                                <LineChart className="w-4 h-4" />
+                            </button>
+                         )}
+                    </div>
+                </div>
+                
+                <div className="bg-slate-900 rounded-lg p-3 border border-slate-700 space-y-3">
+                    {/* Method Selector */}
+                    {ellipses.length > 2 && (
+                        <>
+                        <div className="space-y-1">
+                            <label className="text-xs text-slate-500">Fitting Method</label>
+                            <div className="relative">
+                                <select 
+                                    value={calibrationMethod} 
+                                    onChange={(e) => setCalibrationMethod(e.target.value as CalibrationMethod)}
+                                    className="w-full bg-slate-800 border border-slate-600 text-slate-200 text-xs rounded px-2 py-1.5 appearance-none focus:border-emerald-500 outline-none pr-6"
+                                >
+                                    <option value="linear">Direct Linear (LS)</option>
+                                    <option value="ransac">RANSAC (Robust)</option>
+                                    <option value="iterative">Iterative Removal</option>
+                                </select>
+                                <ChevronDown className="w-3 h-3 absolute right-2 top-2 text-slate-400 pointer-events-none" />
+                            </div>
+                        </div>
+
+                        {/* Iterative Params */}
+                        {calibrationMethod === 'iterative' && (
+                            <div className="grid grid-cols-2 gap-2 animate-in slide-in-from-top-1">
+                                <div className="space-y-1">
+                                    <label className="text-[10px] text-slate-500 flex items-center gap-1">
+                                        <Repeat className="w-3 h-3" /> Iterations
+                                    </label>
+                                    <input 
+                                        type="number" 
+                                        min="1" max="10" 
+                                        value={iterIterations}
+                                        onChange={(e) => setIterIterations(Math.max(1, parseInt(e.target.value) || 1))}
+                                        className="w-full bg-slate-800 border border-slate-600 rounded px-2 py-1 text-xs text-slate-200 outline-none focus:border-emerald-500"
+                                    />
+                                </div>
+                                <div className="space-y-1">
+                                    <label className="text-[10px] text-slate-500 flex items-center gap-1">
+                                        <Percent className="w-3 h-3" /> Drop %
+                                    </label>
+                                    <input 
+                                        type="number" 
+                                        min="1" max="50" 
+                                        value={iterPercentage}
+                                        onChange={(e) => setIterPercentage(Math.min(50, Math.max(1, parseInt(e.target.value) || 1)))}
+                                        className="w-full bg-slate-800 border border-slate-600 rounded px-2 py-1 text-xs text-slate-200 outline-none focus:border-emerald-500"
+                                    />
+                                </div>
+                            </div>
+                        )}
+                        </>
+                    )}
+
                     {calibration?.isValid ? (
-                        <div className="space-y-2">
+                        <div className="space-y-2 pt-1">
                             <div className="flex justify-between items-center border-b border-slate-800 pb-2">
                                 <span className="text-xs text-slate-400">Rotation Center X</span>
                                 <span className="font-mono text-sm font-bold text-emerald-400">
                                     {Math.round(calibration.rotationCenterX)}
+                                </span>
+                            </div>
+                            <div className="flex justify-between items-center border-b border-slate-800 pb-2">
+                                <span className="text-xs text-slate-400">Slope (Angular Rate)</span>
+                                <span className="font-mono text-xs font-bold text-blue-400">
+                                    {calibration.slope.toExponential(3)}
                                 </span>
                             </div>
                              <div className="flex justify-between items-center">
@@ -208,8 +308,9 @@ export const Sidebar: React.FC<SidebarProps> = ({
                             </button>
                         </div>
                     ) : (
-                        <p className="text-xs text-slate-500 text-center py-2">
-                            Data insufficient or noisy for sector analysis.
+                        <p className="text-xs text-slate-500 text-center py-2 italic">
+                            No active calibration model.<br/>
+                            Extract ROIs or import a JSON model.
                         </p>
                     )}
                 </div>
@@ -321,7 +422,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
              className="w-full flex items-center justify-center gap-2 bg-emerald-600 hover:bg-emerald-500 text-white py-2.5 px-4 rounded-lg font-medium transition-colors shadow-lg shadow-emerald-900/20"
            >
              <Download className="w-4 h-4" />
-             Save JSON
+             Save Extracted Points
            </button>
         ) : (
             <button

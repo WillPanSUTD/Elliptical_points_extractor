@@ -103,16 +103,20 @@ export const RoiCanvas: React.FC<RoiCanvasProps> = ({
     rois.forEach((roi, index) => {
       const isActive = roi.id === activeRoiId;
       
+      // Define colors
+      // Active: Orange (#f97316), Inactive: Blue (#3b82f6)
+      const color = isActive ? '#f97316' : '#3b82f6'; 
+      
       ctx.beginPath();
       ctx.arc(roi.x, roi.y, roi.radius, 0, Math.PI * 2);
       ctx.lineWidth = 2 / scale; // Keep line width consistent visually
-      ctx.strokeStyle = isActive ? '#3b82f6' : 'rgba(255, 255, 255, 0.6)';
+      ctx.strokeStyle = color;
       ctx.setLineDash([5 / scale, 5 / scale]);
       ctx.stroke();
       ctx.setLineDash([]);
       
       // Draw ID
-      ctx.fillStyle = isActive ? '#3b82f6' : 'rgba(255, 255, 255, 0.8)';
+      ctx.fillStyle = color;
       ctx.font = `bold ${14 / scale}px sans-serif`;
       ctx.fillText(`#${index + 1}`, roi.x - roi.radius, roi.y - roi.radius - (5/scale));
 
@@ -121,7 +125,7 @@ export const RoiCanvas: React.FC<RoiCanvasProps> = ({
         ctx.beginPath();
         // Increased handle size for better usability (6 instead of 4)
         ctx.arc(roi.x + roi.radius, roi.y, 6 / scale, 0, Math.PI * 2);
-        ctx.fillStyle = '#3b82f6';
+        ctx.fillStyle = color;
         ctx.fill();
         ctx.strokeStyle = '#fff';
         ctx.lineWidth = 1 / scale;
@@ -131,11 +135,22 @@ export const RoiCanvas: React.FC<RoiCanvasProps> = ({
 
     // 2. Draw Extracted Ellipses
     ellipses.forEach(ell => {
+        const isOutlier = ell.status === 'outlier';
+        const strokeColor = isOutlier ? '#ef4444' : '#10b981'; // Red for outlier, Emerald for active
+        
         ctx.beginPath();
         ctx.ellipse(ell.cx, ell.cy, ell.rx, ell.ry, ell.angle, 0, Math.PI * 2);
         ctx.lineWidth = 2 / scale;
-        ctx.strokeStyle = '#10b981'; // Emerald 500
+        ctx.strokeStyle = strokeColor;
+        
+        if (isOutlier) {
+           ctx.setLineDash([4 / scale, 4 / scale]);
+        } else {
+           ctx.setLineDash([]);
+        }
+        
         ctx.stroke();
+        ctx.setLineDash([]);
 
         // Draw center cross
         const size = Math.min(ell.rx, ell.ry) / 2;
@@ -144,7 +159,7 @@ export const RoiCanvas: React.FC<RoiCanvasProps> = ({
         ctx.lineTo(ell.cx + size, ell.cy);
         ctx.moveTo(ell.cx, ell.cy - size);
         ctx.lineTo(ell.cx, ell.cy + size);
-        ctx.strokeStyle = '#10b981';
+        ctx.strokeStyle = strokeColor;
         ctx.stroke();
     });
 

@@ -1,100 +1,293 @@
-import { EllipseData, CalibrationResult } from '../types';
+import { EllipseData, CalibrationResult, CalibrationMethod } from '../types';
 
 /**
- * Calculates the Sector Transformation parameters based on ellipse aspect ratios.
- * Model: AspectRatio (rx/ry) = A * x + B
- * Rotation Center X = -B / A
+ * Helper to calculate Aspect Ratio (Width/Height) of the bounding box.
  */
-export const calculateSectorCalibration = (ellipses: EllipseData[]): CalibrationResult => {
-  if (ellipses.length < 3) {
-    return { rotationCenterX: 0, slope: 0, intercept: 0, rSquared: 0, isValid: false };
-  }
-
-  // Prepare data points: X = cx, Y = Aspect Ratio
-  // We used to use rx/ry. However, imageProcessing returns rx as Major Axis and ry as Minor Axis (sorted by size).
-  // If the ellipses are tall (dy > dx), rx is Height, ry is Width.
-  // Then rx/ry > 1.
-  // But physically in a sector scan, Aspect Ratio (Width/Height) should be proportional to R.
-  // If R is small/slow scan, Width/Height < 1.
-  // To fix this, we calculate the Bounding Box Width and Height.
-  
-  const n = ellipses.length;
-  let sumX = 0;
-  let sumY = 0;
-  let sumXY = 0;
-  let sumXX = 0;
-  let sumYY = 0;
-
-  ellipses.forEach(e => {
-    const x = e.cx;
-    
-    // Calculate projected width and height (Bounding Box)
-    // Width = 2 * sqrt( (rx * cos theta)^2 + (ry * sin theta)^2 )
-    // Height = 2 * sqrt( (rx * sin theta)^2 + (ry * cos theta)^2 )
-    // This is robust against 90 degree rotations.
-    
+const getAspectRatio = (e: EllipseData) => {
     const cosT = Math.cos(e.angle);
     const sinT = Math.sin(e.angle);
-    
     const w = 2 * Math.sqrt(Math.pow(e.rx * cosT, 2) + Math.pow(e.ry * sinT, 2));
     const h = 2 * Math.sqrt(Math.pow(e.rx * sinT, 2) + Math.pow(e.ry * cosT, 2));
-    
-    const y = w / h; // Aspect Ratio (Width / Height)
-    
-    sumX += x;
-    sumY += y;
-    sumXY += x * y;
-    sumXX += x * x;
-    sumYY += y * y;
-  });
+    return w / h;
+};
 
-  const denominator = (n * sumXX - sumX * sumX);
+// --- RANSAC Implementation ---
+const fitRansac = (data: {x: number, y: number}[], iterations: number = 100, threshold: number = 0.15) => {
+    const n = data.length;
+    if (n < 2) return null;
+
+    let bestSlope = 0;
+    let bestIntercept = 0;
+    let maxInliers = 0;
+    let bestInlierIndices: number[] = [];
+
+    for (let i = 0; i < iterations; i++) {
+        // 1. Pick two random points
+        const idx1 = Math.floor(Math.random() * n);
+        let idx2 = Math.floor(Math.random() * n);
+        while (idx1 === idx2) {
+            idx2 = Math.floor(Math.random() * n);
+        }
+
+        const p1 = data[idx1];
+        const p2 = data[idx2];
+
+        // 2. Fit model
+        if (Math.abs(p2.x - p1.x) < 1e-5) continue; // Vertical line check
+        const slope = (p2.y - p1.y) / (p2.x - p1.x);
+        const intercept = p1.y - slope * p1.x;
+
+        // 3. Count inliers
+        let currentInliers = 0;
+        const currentInlierIndices: number[] = [];
+
+        for (let j = 0; j < n; j++) {
+            const predictedY = slope * data[j].x + intercept;
+            const error = Math.abs(data[j].y - predictedY);
+            if (error < threshold) {
+                currentInliers++;
+                currentInlierIndices.push(j);
+            }
+        }
+
+        // 4. Update best
+        if (currentInliers > maxInliers) {
+            maxInliers = currentInliers;
+            bestSlope = slope;
+            bestIntercept = intercept;
+            bestInlierIndices = currentInlierIndices;
+        }
+    }
+
+    if (maxInliers < 2) return null;
+
+    // 5. Refine using Least Squares on ALL inliers
+    let sumX = 0, sumY = 0, sumXY = 0, sumXX = 0;
+    const inlierCount = bestInlierIndices.length;
+    
+    bestInlierIndices.forEach(idx => {
+        const p = data[idx];
+        sumX += p.x;
+        sumY += p.y;
+        sumXY += p.x * p.y;
+        sumXX += p.x * p.x;
+    });
+
+    const refinedSlope = (inlierCount * sumXY - sumX * sumY) / (inlierCount * sumXX - sumX * sumX);
+    const refinedIntercept = (sumY - refinedSlope * sumX) / inlierCount;
+
+    return {
+        slope: refinedSlope,
+        intercept: refinedIntercept,
+        inlierIndices: new Set(bestInlierIndices)
+    };
+};
+
+// --- Iterative Removal Implementation ---
+const fitIterative = (data: {x: number, y: number}[], iterations: number, percentage: number) => {
+    // Store original index to return the correct set of inliers
+    let currentData = data.map((p, i) => ({ ...p, originalIndex: i }));
+    
+    for (let k = 0; k < iterations; k++) {
+        if (currentData.length < 3) break;
+
+        // 1. Fit Linear on current set
+        let sumX = 0, sumY = 0, sumXY = 0, sumXX = 0;
+        const n = currentData.length;
+        currentData.forEach(p => {
+             sumX += p.x; sumY += p.y; sumXY += p.x * p.y; sumXX += p.x * p.x;
+        });
+        
+        const denom = (n * sumXX - sumX * sumX);
+        if (Math.abs(denom) < 1e-9) break;
+
+        const slope = (n * sumXY - sumX * sumY) / denom;
+        const intercept = (sumY - slope * sumX) / n;
+
+        // 2. Calculate Residuals
+        const residuals = currentData.map(p => ({
+            ...p,
+            res: Math.abs(p.y - (slope * p.x + intercept))
+        }));
+
+        // 3. Sort by residual (descending)
+        residuals.sort((a, b) => b.res - a.res);
+
+        // 4. Remove top %
+        const countToRemove = Math.max(1, Math.floor(n * (percentage / 100)));
+        const countToKeep = Math.max(3, n - countToRemove);
+        
+        // Keep the bottom 'countToKeep' (smallest residuals)
+        currentData = residuals.slice(residuals.length - countToKeep);
+    }
+
+    // Final Fit on remaining data to get best line params (handled by main function, we just return indices)
+    return new Set(currentData.map(d => d.originalIndex));
+};
+
+/**
+ * Standard robust-ish linear fit (iterative removal based on std dev)
+ */
+const fitLinearWithOutlierRemoval = (data: {x: number, y: number}[]) => {
+     // 1. Initial LS
+    let sumX = 0, sumY = 0, sumXY = 0, sumXX = 0;
+    const n = data.length;
+
+    data.forEach(p => {
+        sumX += p.x;
+        sumY += p.y;
+        sumXY += p.x * p.y;
+        sumXX += p.x * p.x;
+    });
+
+    const slope = (n * sumXY - sumX * sumY) / (n * sumXX - sumX * sumX);
+    const intercept = (sumY - slope * sumX) / n;
+
+    // 2. Residuals
+    const residuals = data.map(p => {
+        const predicted = slope * p.x + intercept;
+        return Math.abs(p.y - predicted);
+    });
+
+    const meanRes = residuals.reduce((a, b) => a + b, 0) / n;
+    const variance = residuals.reduce((a, b) => a + Math.pow(b - meanRes, 2), 0) / n;
+    const stdDev = Math.sqrt(variance);
+    const threshold = Math.max(stdDev * 2.0, 0.05);
+
+    const inlierIndices = new Set<number>();
+    residuals.forEach((res, i) => {
+        if (res <= threshold) inlierIndices.add(i);
+    });
+    
+    return { slope, intercept, inlierIndices };
+};
+
+export interface CalibrationOptions {
+    iterativeIterations?: number;
+    iterativePercentage?: number;
+}
+
+/**
+ * Main Calibration Function
+ */
+export const calculateSectorCalibration = (
+    ellipses: EllipseData[], 
+    method: CalibrationMethod = 'linear',
+    options: CalibrationOptions = {}
+): { result: CalibrationResult, updatedEllipses: EllipseData[] } => {
   
-  if (Math.abs(denominator) < 1e-10) {
-     return { rotationCenterX: 0, slope: 0, intercept: 0, rSquared: 0, isValid: false };
+  if (ellipses.length < 3) {
+      const emptyRes = { rotationCenterX: 0, slope: 0, intercept: 0, angularResolution: 0, rSquared: 0, isValid: false };
+      const resetEllipses = ellipses.map(e => ({ ...e, status: 'active' as const }));
+      return { result: emptyRes, updatedEllipses: resetEllipses };
   }
 
-  const slope = (n * sumXY - sumX * sumY) / denominator;
-  const intercept = (sumY - slope * sumX) / n;
+  const data = ellipses.map(e => ({ x: e.cx, y: getAspectRatio(e) }));
+  
+  let slope = 0;
+  let intercept = 0;
+  let inlierIndices = new Set<number>();
 
-  // Calculate R-Squared
-  const ssTotal = sumYY - (sumY * sumY) / n;
-  const ssRes = sumYY - intercept * sumY - slope * sumXY;
-  // Handle perfect fit case or numerical noise
+  if (method === 'ransac') {
+      const ransacRes = fitRansac(data);
+      if (ransacRes) {
+          slope = ransacRes.slope;
+          intercept = ransacRes.intercept;
+          inlierIndices = ransacRes.inlierIndices;
+      }
+  } else if (method === 'iterative') {
+      const iterations = options.iterativeIterations || 3;
+      const percentage = options.iterativePercentage || 10;
+      const indices = fitIterative(data, iterations, percentage);
+      
+      inlierIndices = indices;
+      
+      // Calculate final LS params on inliers
+      let sumX = 0, sumY = 0, sumXY = 0, sumXX = 0;
+      let count = 0;
+      data.forEach((p, i) => {
+          if (inlierIndices.has(i)) {
+              sumX += p.x; sumY += p.y; sumXY += p.x*p.y; sumXX += p.x*p.x;
+              count++;
+          }
+      });
+      if (count >= 2) {
+          slope = (count * sumXY - sumX * sumY) / (count * sumXX - sumX * sumX);
+          intercept = (sumY - slope * sumX) / count;
+      }
+      
+  } else {
+      // Linear (Direct with standard 2-sigma filter)
+      const linRes = fitLinearWithOutlierRemoval(data);
+      slope = linRes.slope;
+      intercept = linRes.intercept;
+      inlierIndices = linRes.inlierIndices;
+  }
+
+  // Calculate R-Squared using only Inliers
+  let ssTotal = 0;
+  let ssRes = 0;
+  let validCount = 0;
+  let sumY = 0;
+
+  // First pass for mean Y of inliers
+  data.forEach((p, i) => {
+      if (inlierIndices.has(i)) {
+          sumY += p.y;
+          validCount++;
+      }
+  });
+  const meanY = validCount > 0 ? sumY / validCount : 0;
+
+  data.forEach((p, i) => {
+      if (inlierIndices.has(i)) {
+          const predicted = slope * p.x + intercept;
+          ssTotal += Math.pow(p.y - meanY, 2);
+          ssRes += Math.pow(p.y - predicted, 2);
+      }
+  });
+
   const rSquared = ssTotal === 0 ? 0 : 1 - (ssRes / ssTotal);
-
-  // Rotation Center is where Aspect Ratio would be 0
-  // 0 = slope * x + intercept => x = -intercept / slope
+  
   let rotationCenterX = 0;
   if (Math.abs(slope) > 1e-10) {
       rotationCenterX = -intercept / slope;
   }
 
-  return {
-    rotationCenterX,
-    slope, // slope corresponds to Radians per Pixel (Y-axis) roughly
-    intercept,
-    rSquared: Math.abs(rSquared),
-    isValid: Math.abs(rSquared) > 0.6 
+  const angularResolution = slope * (180 / Math.PI);
+  
+  // Construct Result
+  const result: CalibrationResult = {
+      rotationCenterX,
+      slope,
+      intercept,
+      angularResolution,
+      rSquared: Math.abs(rSquared),
+      isValid: validCount >= 3 && Math.abs(rSquared) > 0.5
   };
+
+  // Update Ellipses Status
+  const updatedEllipses = ellipses.map((e, i): EllipseData => ({
+      ...e,
+      status: inlierIndices.has(i) ? 'active' : 'outlier'
+  }));
+
+  return { result, updatedEllipses };
+};
+
+export const filterEllipsesByTrend = (ellipses: EllipseData[]): EllipseData[] => {
+    // Basic linear filter for auto-detection
+    const { updatedEllipses } = calculateSectorCalibration(ellipses, 'linear');
+    return updatedEllipses;
 };
 
 export const getPhysicalDimensions = (e: EllipseData, cal: CalibrationResult) => {
     if (!cal.isValid) return { radius: 0, arc: 0 };
-    
-    // Physical Radius in pixels relative to rotation center
     const R = e.cx - cal.rotationCenterX;
-    
-    // Physical Arc Length (approximate relative value)
     const Arc = e.cy * R; 
-
     return { radius: R, arc: Arc };
 };
 
-/**
- * Generates a Sector (Fan) view from the rectangular raw data using the calibration.
- * Performs an Inverse Mapping from the Target (Fan) coordinates back to Source (Rect) coordinates.
- */
 export const generateSectorImage = async (
   imageSrc: string,
   calibration: CalibrationResult
@@ -104,7 +297,6 @@ export const generateSectorImage = async (
     img.src = imageSrc;
     img.onload = () => {
       try {
-        // 1. Setup Source Canvas
         const srcCanvas = document.createElement('canvas');
         srcCanvas.width = img.width;
         srcCanvas.height = img.height;
@@ -113,30 +305,14 @@ export const generateSectorImage = async (
         srcCtx.drawImage(img, 0, 0);
         const srcData = srcCtx.getImageData(0, 0, img.width, img.height);
 
-        // 2. Calculate Geometry
-        // Slope corresponds to Radians per Pixel (Y-axis)
-        // Note: AR = Width/Height. 
-        // Width = 1 * R_radial. Height = R_radial * dTheta/dPixelY.
-        // AR = dTheta/dPixelY * R ?? No.
-        // ArcLength = R * dTheta. Height_px = ArcLength / (1?).
-        // Actually: AR = Width_px / Height_px.
-        // Width_px ~ Constant (Radial resolution).
-        // Height_px ~ 1/R.
-        // AR ~ R. Slope is d(AR)/dx.
-        // Slope relates strictly to angular resolution.
-        
         const slope = Math.abs(calibration.slope); 
         const totalAngle = slope * img.height; 
         
         const rotationCenterX = calibration.rotationCenterX;
         
-        // Define Radial bounds based on image width
-        // Assume x=0 is left, x=W is right.
-        // R = x - rotationCenterX.
         const rMin = 0 - rotationCenterX;
         const rMax = img.width - rotationCenterX;
 
-        // Bounding Box Calculation for the Output Canvas
         const corners = [];
         const thetas = [-totalAngle/2, totalAngle/2];
         const radii = [rMin, rMax];
@@ -158,12 +334,10 @@ export const generateSectorImage = async (
             maxV = Math.max(maxV, p.v);
         });
 
-        // Add padding
         const padding = 20;
         const outWidth = Math.ceil(maxU - minU + padding * 2);
         const outHeight = Math.ceil(maxV - minV + padding * 2);
 
-        // 3. Create Output Canvas
         const outCanvas = document.createElement('canvas');
         outCanvas.width = outWidth;
         outCanvas.height = outHeight;
@@ -180,7 +354,6 @@ export const generateSectorImage = async (
         const data = srcData.data;
         const outData = outImageData.data;
 
-        // 4. Inverse Mapping Loop
         for (let py = 0; py < outHeight; py++) {
             for (let px = 0; px < outWidth; px++) {
                 const u = px - offU;

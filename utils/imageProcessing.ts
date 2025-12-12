@@ -1,4 +1,5 @@
 import { CircleROI, EllipseData, ProcessingMode } from '../types';
+import { filterEllipsesByTrend } from './calibration';
 
 // Helper to get luminance from RGB
 const getLuminance = (r: number, g: number, b: number) => {
@@ -44,7 +45,8 @@ const calculateEllipseFromMoments = (
     cy: offsetY + yc,
     rx: Math.max(1, rx),
     ry: Math.max(1, ry),
-    angle: angle
+    angle: angle,
+    status: 'active'
   };
 };
 
@@ -63,7 +65,7 @@ export const extractEllipseFromROI = (
   const height = endY - startY;
 
   if (width <= 0 || height <= 0) {
-    return { id: roi.id, cx: x, cy: y, rx: radius, ry: radius, angle: 0 };
+    return { id: roi.id, cx: x, cy: y, rx: radius, ry: radius, angle: 0, status: 'active' };
   }
 
   const imageData = ctx.getImageData(startX, startY, width, height);
@@ -107,7 +109,7 @@ export const extractEllipseFromROI = (
   }
 
   if (m00 === 0) {
-     return { id: roi.id, cx: x, cy: y, rx: radius, ry: radius, angle: 0 };
+     return { id: roi.id, cx: x, cy: y, rx: radius, ry: radius, angle: 0, status: 'active' };
   }
 
   return calculateEllipseFromMoments(roi.id, m00, m10, m01, m11, m20, m02, startX, startY);
@@ -139,7 +141,6 @@ export const autoDetectEllipses = (
     return mode === 'dark' ? lum < threshold : lum > threshold;
   };
 
-  // Stack-based flood fill (recursion is too risky for large images)
   const stack: number[] = [];
 
   for (let y = 0; y < height; y++) {
@@ -162,15 +163,11 @@ export const autoDetectEllipses = (
           const cy = Math.floor(curr / width);
           const cx = curr % width;
 
-          // Update bounds
           if (cx < minX) minX = cx;
           if (cx > maxX) maxX = cx;
           if (cy < minY) minY = cy;
           if (cy > maxY) maxY = cy;
 
-          // Simple binary weight (1) for shape detection or use grey value
-          // Using 1 makes it purely geometric based on threshold mask
-          // Using intensity makes it weighted. Let's use simple binary for stable blob finding.
           const weight = 1; 
 
           m00 += weight;
@@ -181,7 +178,6 @@ export const autoDetectEllipses = (
           m02 += weight * cy * cy;
           count++;
 
-          // Check neighbors (4-connectivity)
           const neighbors = [
             curr - 1,       // Left
             curr + 1,       // Right
@@ -191,7 +187,6 @@ export const autoDetectEllipses = (
 
           for (const n of neighbors) {
             if (n >= 0 && n < width * height && !visited[n]) {
-              // Ensure we don't wrap around image edges for Left/Right
               if ((curr % width === 0 && n === curr - 1) || (curr % width === width - 1 && n === curr + 1)) {
                   continue;
               }
@@ -204,25 +199,19 @@ export const autoDetectEllipses = (
           }
         }
 
-        // Filter noise: Minimum area (e.g., 20 pixels) and max area (e.g., 1/4 of screen)
-        // Also aspect ratio check to avoid lines
         const blobW = maxX - minX;
         const blobH = maxY - minY;
         
         if (count > 10 && count < (width * height * 0.4)) {
-           // Calculate ellipse
            const rawEllipse = calculateEllipseFromMoments(0, m00, m10, m01, m11, m20, m02, 0, 0);
 
-           // FILTER: Check Radius Constraints
-           // Check if semi-axes are within the min/max range provided by user
            if (rawEllipse.rx < minRadius || rawEllipse.rx > maxRadius || 
                rawEllipse.ry < minRadius || rawEllipse.ry > maxRadius) {
                continue;
            }
            
-           // Extra sanity check on shape
            const aspectRatio = Math.max(rawEllipse.rx, rawEllipse.ry) / Math.min(rawEllipse.rx, rawEllipse.ry);
-           if (aspectRatio < 5) { // Reject extremely thin lines
+           if (aspectRatio < 5) { 
                detected.push(rawEllipse);
            }
         }
@@ -230,51 +219,41 @@ export const autoDetectEllipses = (
     }
   }
 
-  // SORTING: Top-Left to Bottom-Right (Reading Order)
-  // Simple Y-sort fails if rows are slightly tilted.
-  // We perform a "Row Grouping" sort.
-  
-  // 1. Sort primarily by Y
+  // SORTING
   detected.sort((a, b) => a.cy - b.cy);
 
-  // 2. Group into rows
   if (detected.length > 0) {
       const sorted: EllipseData[] = [];
       let currentRow: EllipseData[] = [detected[0]];
-      const rowTolerance = Math.max(detected[0].ry, 10); // Use height of first item as tolerance
+      const rowTolerance = Math.max(detected[0].ry, 10);
 
       for (let i = 1; i < detected.length; i++) {
           const prev = currentRow[currentRow.length - 1];
           const curr = detected[i];
 
-          // If current is within tolerance of the *average* Y of the current row, add to row
           const avgY = currentRow.reduce((sum, e) => sum + e.cy, 0) / currentRow.length;
           
           if (Math.abs(curr.cy - avgY) < rowTolerance * 1.5) {
               currentRow.push(curr);
           } else {
-              // Finish this row: sort by X
               currentRow.sort((a, b) => a.cx - b.cx);
               sorted.push(...currentRow);
-              // Start new row
               currentRow = [curr];
           }
       }
-      // Push last row
       currentRow.sort((a, b) => a.cx - b.cx);
       sorted.push(...currentRow);
-      
-      // Replace extracted list with sorted list
       detected.length = 0;
       detected.push(...sorted);
   }
 
-  // Generate ROIs based on detected ellipses
+  // --- NEW STEP: FILTER OUTLIERS ---
+  const filteredDetected = filterEllipsesByTrend(detected);
+
   const finalEllipses: EllipseData[] = [];
   const finalRois: CircleROI[] = [];
 
-  detected.forEach((d, idx) => {
-      // Re-assign IDs based on sorted order
+  filteredDetected.forEach((d, idx) => {
       const newId = Date.now() + idx; 
       
       finalEllipses.push({
@@ -286,7 +265,6 @@ export const autoDetectEllipses = (
           id: newId,
           x: d.cx,
           y: d.cy,
-          // ROI radius slightly larger than the detected ellipse major axis
           radius: Math.max(d.rx, d.ry) * 1.5
       });
   });

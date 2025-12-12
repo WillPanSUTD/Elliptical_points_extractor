@@ -1,9 +1,10 @@
-import React, { useState, useRef, useEffect } from 'react';
+import React, { useState, useRef, useCallback, useEffect } from 'react';
 import { Sidebar } from './components/Sidebar';
 import { RoiCanvas } from './components/RoiCanvas';
 import { DataModal } from './components/DataModal';
 import { SectorViewModal } from './components/SectorViewModal';
-import { CircleROI, EllipseData, ProcessingMode, CalibrationResult } from './types';
+import { CalibrationChartModal } from './components/CalibrationChartModal';
+import { CircleROI, EllipseData, ProcessingMode, CalibrationResult, CalibrationMethod } from './types';
 import { extractEllipseFromROI, autoDetectEllipses } from './utils/imageProcessing';
 import { calculateSectorCalibration } from './utils/calibration';
 
@@ -16,17 +17,46 @@ export default function App() {
   const [activeRoiId, setActiveRoiId] = useState<number | null>(null);
   const [isDataModalOpen, setIsDataModalOpen] = useState(false);
   const [isSectorModalOpen, setIsSectorModalOpen] = useState(false);
+  const [isChartModalOpen, setIsChartModalOpen] = useState(false);
+  const [calibrationMethod, setCalibrationMethod] = useState<CalibrationMethod>('linear');
+  
+  // Iterative Params
+  const [iterIterations, setIterIterations] = useState(3);
+  const [iterPercentage, setIterPercentage] = useState(10);
+
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
 
-  // Run calibration whenever ellipses change
-  useEffect(() => {
-    if (ellipses.length >= 3) {
-      const result = calculateSectorCalibration(ellipses);
+  // Centralized function to update calibration based on current ellipses and method
+  const updateCalibration = useCallback((currentEllipses: EllipseData[], method: CalibrationMethod) => {
+    if (currentEllipses.length >= 3) {
+      const { result, updatedEllipses: calibratedEllipses } = calculateSectorCalibration(
+          currentEllipses, 
+          method,
+          {
+              iterativeIterations: iterIterations,
+              iterativePercentage: iterPercentage
+          }
+      );
       setCalibration(result);
+      setEllipses(calibratedEllipses);
     } else {
       setCalibration(null);
+      // Just set them as is if we can't calibrate yet
+      setEllipses(currentEllipses);
     }
-  }, [ellipses]);
+  }, [iterIterations, iterPercentage]);
+
+  // Re-run calibration if iterative params change while method is 'iterative'
+  useEffect(() => {
+    if (ellipses.length >= 3 && calibrationMethod === 'iterative') {
+        updateCalibration(ellipses, 'iterative');
+    }
+  }, [iterIterations, iterPercentage, calibrationMethod, updateCalibration]); // ellipses dependency omitted to avoid cycle, we trigger manual updates mostly
+
+  const handleCalibrationMethodChange = (method: CalibrationMethod) => {
+    setCalibrationMethod(method);
+    updateCalibration(ellipses, method);
+  };
 
   const handleImageUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
@@ -51,11 +81,14 @@ export default function App() {
   };
 
   const handleDeleteRoi = (id: number) => {
-    setRois(prev => prev.filter(r => r.id !== id));
-    setEllipses(prev => prev.filter(e => e.id !== id));
+    const newRois = rois.filter(r => r.id !== id);
+    const newEllipses = ellipses.filter(e => e.id !== id);
+    
+    setRois(newRois);
     if (activeRoiId === id) {
       setActiveRoiId(null);
     }
+    updateCalibration(newEllipses, calibrationMethod);
   };
 
   const handleProcess = () => {
@@ -74,8 +107,8 @@ export default function App() {
       tempCtx.drawImage(img, 0, 0);
 
       // Process on the clean context
-      const newEllipses = rois.map(roi => extractEllipseFromROI(tempCtx, roi, mode));
-      setEllipses(newEllipses);
+      const extracted = rois.map(roi => extractEllipseFromROI(tempCtx, roi, mode));
+      updateCalibration(extracted, calibrationMethod);
     };
   };
 
@@ -102,8 +135,8 @@ export default function App() {
         maxRadius
       );
       
-      setEllipses(detectedEllipses);
       setRois(generatedRois);
+      updateCalibration(detectedEllipses, calibrationMethod);
       
       if (detectedEllipses.length === 0) {
           alert("No ellipses found matching the threshold and radius criteria.");
@@ -140,6 +173,43 @@ export default function App() {
     a.click();
     document.body.removeChild(a);
     URL.revokeObjectURL(url);
+  };
+
+  const handleExportCalibration = () => {
+    if (!calibration) return;
+    const dataStr = JSON.stringify(calibration, null, 2);
+    const blob = new Blob([dataStr], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = 'calibration_model.json';
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  };
+
+  const handleImportCalibration = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (file) {
+        const reader = new FileReader();
+        reader.onload = (event) => {
+            try {
+                const json = JSON.parse(event.target?.result as string);
+                // Basic validation
+                if (typeof json.slope === 'number' && typeof json.rotationCenterX === 'number') {
+                    setCalibration(json);
+                } else {
+                    alert("Invalid calibration file format.");
+                }
+            } catch (err) {
+                alert("Failed to parse calibration file.");
+            }
+        };
+        reader.readAsText(file);
+    }
+    // Reset input
+    e.target.value = ''; 
   };
 
   return (
@@ -179,6 +249,16 @@ export default function App() {
         onDeleteRoi={handleDeleteRoi}
         calibration={calibration}
         onViewSector={() => setIsSectorModalOpen(true)}
+        calibrationMethod={calibrationMethod}
+        setCalibrationMethod={handleCalibrationMethodChange}
+        onViewChart={() => setIsChartModalOpen(true)}
+        hasImage={!!imageSrc}
+        onExportCalibration={handleExportCalibration}
+        onImportCalibration={handleImportCalibration}
+        iterIterations={iterIterations}
+        setIterIterations={setIterIterations}
+        iterPercentage={iterPercentage}
+        setIterPercentage={setIterPercentage}
       />
 
       <DataModal 
@@ -192,6 +272,13 @@ export default function App() {
         isOpen={isSectorModalOpen} 
         onClose={() => setIsSectorModalOpen(false)} 
         imageSrc={imageSrc} 
+        calibration={calibration}
+      />
+
+      <CalibrationChartModal
+        isOpen={isChartModalOpen}
+        onClose={() => setIsChartModalOpen(false)}
+        ellipses={ellipses}
         calibration={calibration}
       />
     </div>
