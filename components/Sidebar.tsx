@@ -1,9 +1,9 @@
 import React from 'react';
-import { CircleROI, EllipseData, ProcessingMode, CalibrationResult, CalibrationMethod } from '../types';
-import { Trash2, Calculator, Download, Upload, Sliders, TableProperties, Wand2, X, RotateCcw, ScanLine, Eye, LineChart, ChevronDown, FileJson, FileUp, Repeat, Percent } from 'lucide-react';
+import { ROI, EllipseData, ProcessingMode, CalibrationResult, CalibrationMethod } from '../types';
+import { Trash2, Calculator, Download, Upload, Sliders, TableProperties, Wand2, X, RotateCcw, ScanLine, Eye, LineChart, ChevronDown, FileJson, FileUp, Repeat, Percent, FlaskConical } from 'lucide-react';
 
 interface SidebarProps {
-  rois: CircleROI[];
+  rois: ROI[];
   ellipses: EllipseData[];
   onClear: () => void;
   onProcess: () => void;
@@ -13,11 +13,11 @@ interface SidebarProps {
   onExport: () => void;
   onImageUpload: (e: React.ChangeEvent<HTMLInputElement>) => void;
   activeRoiId: number | null;
-  setRois: React.Dispatch<React.SetStateAction<CircleROI[]>>;
+  setRois: React.Dispatch<React.SetStateAction<ROI[]>>;
   onViewData: () => void;
   onDeleteRoi: (id: number) => void;
   calibration: CalibrationResult | null;
-  onViewSector: () => void;
+  onOpenLab: () => void;
   calibrationMethod: CalibrationMethod;
   setCalibrationMethod: (m: CalibrationMethod) => void;
   onViewChart: () => void;
@@ -45,7 +45,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
   onViewData,
   onDeleteRoi,
   calibration,
-  onViewSector,
+  onOpenLab,
   calibrationMethod,
   setCalibrationMethod,
   onViewChart,
@@ -62,15 +62,15 @@ export const Sidebar: React.FC<SidebarProps> = ({
   const [minRadius, setMinRadius] = React.useState(10);
   const [maxRadius, setMaxRadius] = React.useState(200);
 
-  const handleRadiusChange = (newRadius: number) => {
+  const handleRoiChange = (key: keyof ROI, value: number) => {
     if (activeRoiId) {
-      setRois(prev => prev.map(r => r.id === activeRoiId ? { ...r, radius: newRadius } : r));
+      setRois(prev => prev.map(r => r.id === activeRoiId ? { ...r, [key]: value } : r));
     }
   };
 
-  const handleApplyRadiusToAll = () => {
+  const handleApplySizeToAll = () => {
     if (activeRoi) {
-      setRois(prev => prev.map(r => ({ ...r, radius: activeRoi.radius })));
+      setRois(prev => prev.map(r => ({ ...r, rx: activeRoi.rx, ry: activeRoi.ry, rotation: activeRoi.rotation })));
     }
   };
 
@@ -84,7 +84,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
           ROI Extractor
         </h1>
         <p className="text-xs text-slate-400 mt-1">
-          Manual or Automatic calibration.
+          Manual ellipse or auto calibration.
         </p>
       </div>
 
@@ -197,6 +197,83 @@ export const Sidebar: React.FC<SidebarProps> = ({
              </div>
         </div>
 
+        {/* Selected ROI Settings */}
+        {activeRoi && (
+          <div className="space-y-2 animate-in slide-in-from-right-2 duration-200 border-t border-slate-700 pt-4">
+             <label className="block text-sm font-medium text-slate-300 flex items-center gap-2">
+                <Sliders className="w-4 h-4" />
+                Edit ROI #{rois.indexOf(activeRoi) + 1}
+             </label>
+             <div className="bg-slate-900 rounded-lg p-3 border border-slate-700 space-y-3">
+                
+                {/* Rx Slider */}
+                <div className="space-y-1">
+                    <div className="flex justify-between text-xs text-slate-300">
+                        <span>Radius X</span>
+                        <span className="font-mono text-blue-300">{Math.round(activeRoi.rx)}px</span>
+                    </div>
+                    <input
+                        type="range"
+                        min="5"
+                        max="300"
+                        value={activeRoi.rx}
+                        onChange={(e) => handleRoiChange('rx', Number(e.target.value))}
+                        className="w-full h-2 bg-slate-700 rounded-lg appearance-none cursor-pointer accent-blue-500"
+                    />
+                </div>
+
+                {/* Ry Slider */}
+                <div className="space-y-1">
+                    <div className="flex justify-between text-xs text-slate-300">
+                        <span>Radius Y</span>
+                        <span className="font-mono text-blue-300">{Math.round(activeRoi.ry)}px</span>
+                    </div>
+                    <input
+                        type="range"
+                        min="5"
+                        max="300"
+                        value={activeRoi.ry}
+                        onChange={(e) => handleRoiChange('ry', Number(e.target.value))}
+                        className="w-full h-2 bg-slate-700 rounded-lg appearance-none cursor-pointer accent-blue-500"
+                    />
+                </div>
+
+                {/* Rotation Slider */}
+                <div className="space-y-1">
+                    <div className="flex justify-between text-xs text-slate-300">
+                        <span>Rotation</span>
+                        <span className="font-mono text-blue-300">{((activeRoi.rotation * 180)/Math.PI).toFixed(0)}°</span>
+                    </div>
+                    <input
+                        type="range"
+                        min="-180"
+                        max="180"
+                        step="1"
+                        value={(activeRoi.rotation * 180) / Math.PI}
+                        onChange={(e) => handleRoiChange('rotation', Number(e.target.value) * Math.PI / 180)}
+                        className="w-full h-2 bg-slate-700 rounded-lg appearance-none cursor-pointer accent-red-500"
+                    />
+                </div>
+
+                <div className="flex gap-2 pt-1">
+                    <button
+                        onClick={handleApplySizeToAll}
+                        className="flex-1 text-xs bg-slate-800 hover:bg-slate-700 hover:text-white text-slate-300 py-2 rounded border border-slate-700 transition-colors"
+                    >
+                        Apply Shape to All
+                    </button>
+                    <button
+                        onClick={() => onDeleteRoi(activeRoi.id)}
+                        className="text-xs bg-red-900/20 hover:bg-red-900/40 text-red-400 hover:text-red-300 px-3 rounded border border-red-900/30 transition-colors"
+                        title="Delete this ROI"
+                    >
+                        <Trash2 className="w-4 h-4" />
+                    </button>
+                </div>
+            </div>
+          </div>
+        )}
+
         {/* Sector Calibration Analysis */}
         {hasImage && (
             <div className="space-y-2 border-t border-slate-700 pt-4 animate-in fade-in">
@@ -293,18 +370,19 @@ export const Sidebar: React.FC<SidebarProps> = ({
                                     {calibration.slope.toExponential(3)}
                                 </span>
                             </div>
-                             <div className="flex justify-between items-center">
-                                <span className="text-xs text-slate-400">Model Fit (R²)</span>
-                                <span className={`font-mono text-xs font-bold ${calibration.rSquared > 0.9 ? 'text-green-400' : 'text-yellow-400'}`}>
-                                    {calibration.rSquared.toFixed(3)}
+                            <div className="flex justify-between items-center border-b border-slate-800 pb-2">
+                                <span className="text-xs text-slate-400">Reproj. Error (RMSE)</span>
+                                <span className={`font-mono text-xs font-bold ${calibration.reprojectionError < 0.1 ? 'text-green-400' : 'text-orange-400'}`}>
+                                    {calibration.reprojectionError.toFixed(5)}
                                 </span>
                             </div>
+                            
                             <button 
-                                onClick={onViewSector}
-                                className="w-full mt-2 flex items-center justify-center gap-1.5 bg-emerald-900/30 hover:bg-emerald-900/50 text-emerald-400 border border-emerald-900/50 py-1.5 rounded text-xs transition-colors"
+                                onClick={onOpenLab}
+                                className="w-full mt-2 flex items-center justify-center gap-1.5 bg-emerald-600 hover:bg-emerald-500 text-white shadow-lg shadow-emerald-900/20 py-2 rounded text-xs font-bold transition-all"
                             >
-                                <Eye className="w-3.5 h-3.5" />
-                                Show Result Image
+                                <FlaskConical className="w-3.5 h-3.5" />
+                                Open Evaluation Lab
                             </button>
                         </div>
                     ) : (
@@ -315,47 +393,6 @@ export const Sidebar: React.FC<SidebarProps> = ({
                     )}
                 </div>
             </div>
-        )}
-
-        {/* Selected ROI Settings */}
-        {activeRoi && (
-          <div className="space-y-2 animate-in slide-in-from-right-2 duration-200 border-t border-slate-700 pt-4">
-             <label className="block text-sm font-medium text-slate-300 flex items-center gap-2">
-                <Sliders className="w-4 h-4" />
-                Edit ROI #{rois.indexOf(activeRoi) + 1}
-             </label>
-             <div className="bg-slate-900 rounded-lg p-3 border border-slate-700 space-y-3">
-                <div className="space-y-2">
-                    <div className="flex justify-between text-xs text-slate-300">
-                        <span>Radius</span>
-                        <span className="font-mono text-blue-300">{Math.round(activeRoi.radius)}px</span>
-                    </div>
-                    <input
-                        type="range"
-                        min="5"
-                        max="200"
-                        value={activeRoi.radius}
-                        onChange={(e) => handleRadiusChange(Number(e.target.value))}
-                        className="w-full h-2 bg-slate-700 rounded-lg appearance-none cursor-pointer accent-blue-500"
-                    />
-                </div>
-                <div className="flex gap-2">
-                    <button
-                        onClick={handleApplyRadiusToAll}
-                        className="flex-1 text-xs bg-slate-800 hover:bg-slate-700 hover:text-white text-slate-300 py-2 rounded border border-slate-700 transition-colors"
-                    >
-                        Apply Size to All
-                    </button>
-                    <button
-                        onClick={() => onDeleteRoi(activeRoi.id)}
-                        className="text-xs bg-red-900/20 hover:bg-red-900/40 text-red-400 hover:text-red-300 px-3 rounded border border-red-900/30 transition-colors"
-                        title="Delete this ROI"
-                    >
-                        <Trash2 className="w-4 h-4" />
-                    </button>
-                </div>
-            </div>
-          </div>
         )}
 
         {/* Data Preview */}

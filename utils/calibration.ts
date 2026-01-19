@@ -177,7 +177,7 @@ export const calculateSectorCalibration = (
 ): { result: CalibrationResult, updatedEllipses: EllipseData[] } => {
   
   if (ellipses.length < 3) {
-      const emptyRes = { rotationCenterX: 0, slope: 0, intercept: 0, angularResolution: 0, rSquared: 0, isValid: false };
+      const emptyRes = { rotationCenterX: 0, slope: 0, intercept: 0, angularResolution: 0, rSquared: 0, reprojectionError: 0, isValid: false };
       const resetEllipses = ellipses.map(e => ({ ...e, status: 'active' as const }));
       return { result: emptyRes, updatedEllipses: resetEllipses };
   }
@@ -224,11 +224,12 @@ export const calculateSectorCalibration = (
       inlierIndices = linRes.inlierIndices;
   }
 
-  // Calculate R-Squared using only Inliers
+  // Calculate R-Squared and Reprojection Error (RMSE) using only Inliers
   let ssTotal = 0;
   let ssRes = 0;
   let validCount = 0;
   let sumY = 0;
+  let sumSquaredError = 0;
 
   // First pass for mean Y of inliers
   data.forEach((p, i) => {
@@ -242,12 +243,21 @@ export const calculateSectorCalibration = (
   data.forEach((p, i) => {
       if (inlierIndices.has(i)) {
           const predicted = slope * p.x + intercept;
+          const residual = p.y - predicted;
+          
           ssTotal += Math.pow(p.y - meanY, 2);
-          ssRes += Math.pow(p.y - predicted, 2);
+          ssRes += Math.pow(residual, 2);
+          
+          // Sum of squared residuals for RMSE
+          sumSquaredError += residual * residual;
       }
   });
 
   const rSquared = ssTotal === 0 ? 0 : 1 - (ssRes / ssTotal);
+  
+  // RMSE: Root Mean Square Error (Reprojection Error)
+  // This represents the average deviation of the observed aspect ratio from the model
+  const rmse = validCount > 0 ? Math.sqrt(sumSquaredError / validCount) : 0;
   
   let rotationCenterX = 0;
   if (Math.abs(slope) > 1e-10) {
@@ -263,6 +273,7 @@ export const calculateSectorCalibration = (
       intercept,
       angularResolution,
       rSquared: Math.abs(rSquared),
+      reprojectionError: rmse,
       isValid: validCount >= 3 && Math.abs(rSquared) > 0.5
   };
 

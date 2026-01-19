@@ -97,7 +97,11 @@ export const DataModal: React.FC<DataModalProps> = ({ isOpen, onClose, ellipses,
                              <span className={`font-bold ${isOutlier ? 'text-red-400 line-through' : 'text-blue-400 group-hover:text-blue-300'}`}>
                                 #{idx + 1}
                              </span>
-                             {isOutlier && <AlertTriangle className="w-3 h-3 text-red-500" title="Outlier detected" />}
+                             {isOutlier && (
+                               <span title="Outlier detected">
+                                 <AlertTriangle className="w-3 h-3 text-red-500" />
+                               </span>
+                             )}
                         </div>
                     </td>
                     <td className={`p-4 font-mono text-right ${isOutlier ? 'text-red-400/50' : 'text-slate-300'}`}>
