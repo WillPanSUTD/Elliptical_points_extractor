@@ -18,25 +18,19 @@ const calculateEllipseFromMoments = (
   offsetX: number,
   offsetY: number
 ): EllipseData => {
-  // Centroid
+  if (m00 === 0) {
+      return { id, cx: offsetX, cy: offsetY, rx: 1, ry: 1, angle: 0, status: 'active' };
+  }
   const xc = m10 / m00;
   const yc = m01 / m00;
-
-  // Central moments
   const mu20 = m20 / m00 - xc * xc;
   const mu02 = m02 / m00 - yc * yc;
   const mu11 = m11 / m00 - xc * yc;
-
-  // Eigenvalues of the covariance matrix
   const common = Math.sqrt(4 * mu11 * mu11 + (mu20 - mu02) * (mu20 - mu02));
-  const lambda1 = (mu20 + mu02 + common) / 2;
-  const lambda2 = (mu20 + mu02 - common) / 2;
-
-  // 2-sigma radius
-  const rx = 2 * Math.sqrt(Math.abs(lambda1));
-  const ry = 2 * Math.sqrt(Math.abs(lambda2));
-
-  // Angle
+  const lambda1 = Math.max(0, (mu20 + mu02 + common) / 2);
+  const lambda2 = Math.max(0, (mu20 + mu02 - common) / 2);
+  const rx = 2 * Math.sqrt(lambda1);
+  const ry = 2 * Math.sqrt(lambda2);
   let angle = 0.5 * Math.atan2(2 * mu11, mu20 - mu02);
 
   return {
@@ -53,14 +47,14 @@ const calculateEllipseFromMoments = (
 export const extractEllipseFromROI = (
   ctx: CanvasRenderingContext2D,
   roi: ROI,
-  mode: ProcessingMode
+  mode: ProcessingMode,
+  thresholdOverride?: number
 ): EllipseData => {
   const maxRadius = Math.max(roi.rx, roi.ry);
   const startX = Math.floor(Math.max(0, roi.cx - maxRadius));
   const startY = Math.floor(Math.max(0, roi.cy - maxRadius));
   const endX = Math.ceil(Math.min(ctx.canvas.width, roi.cx + maxRadius));
   const endY = Math.ceil(Math.min(ctx.canvas.height, roi.cy + maxRadius));
-  
   const width = endX - startX;
   const height = endY - startY;
 
@@ -72,61 +66,43 @@ export const extractEllipseFromROI = (
   const data = imageData.data;
   const cosT = Math.cos(-roi.rotation);
   const sinT = Math.sin(-roi.rotation);
-  
   const pixels: {x: number, y: number, val: number}[] = [];
-  let minVal = 255;
-  let maxVal = 0;
+  let minVal = 255, maxVal = 0;
 
   for (let row = 0; row < height; row++) {
     for (let col = 0; col < width; col++) {
-      const px = startX + col; 
-      const py = startY + row;
-      const tx = px - roi.cx;
-      const ty = py - roi.cy;
+      const px = startX + col; const py = startY + row;
+      const tx = px - roi.cx; const ty = py - roi.cy;
       const rx_coord = tx * cosT - ty * sinT;
       const ry_coord = tx * sinT + ty * cosT;
-
-      if ((rx_coord*rx_coord)/(roi.rx*roi.rx) + (ry_coord*ry_coord)/(roi.ry*roi.ry) > 1) continue;
-
-      const idx = (row * width + col) * 4;
-      const r = data[idx];
-      const g = data[idx + 1];
-      const b = data[idx + 2];
-      let val = getLuminance(r, g, b);
-      if (mode === 'dark') val = 255 - val;
       
+      if ((rx_coord*rx_coord)/(roi.rx*roi.rx) + (ry_coord*ry_coord)/(roi.ry*roi.ry) > 1.1) continue;
+      
+      const idx = (row * width + col) * 4;
+      let val = getLuminance(data[idx], data[idx + 1], data[idx + 2]);
+      if (mode === 'dark') val = 255 - val;
       pixels.push({ x: col, y: row, val });
       if (val < minVal) minVal = val;
       if (val > maxVal) maxVal = val;
     }
   }
 
-  if (pixels.length === 0) return { id: roi.id, cx: roi.cx, cy: roi.cy, rx: roi.rx, ry: roi.ry, angle: roi.rotation, status: 'active' };
+  if (pixels.length < 3) return { id: roi.id, cx: roi.cx, cy: roi.cy, rx: roi.rx, ry: roi.ry, angle: roi.rotation, status: 'active' };
 
   const range = maxVal - minVal;
-  const threshold = range > 10 ? (minVal + range * 0.5) : minVal;
+  const threshold = (thresholdOverride !== undefined && thresholdOverride > 0) 
+    ? thresholdOverride 
+    : (range > 10 ? (minVal + range * 0.5) : minVal);
 
   let m00 = 0, m10 = 0, m01 = 0, m11 = 0, m20 = 0, m02 = 0;
-  let validPixels = 0;
-
   for (const p of pixels) {
       if (p.val >= threshold) {
           const weight = p.val - threshold + 1;
           m00 += weight; m10 += weight * p.x; m01 += weight * p.y;
           m11 += weight * p.x * p.y; m20 += weight * p.x * p.x; m02 += weight * p.y * p.y;
-          validPixels++;
       }
   }
-
-  if (m00 === 0 || validPixels < 3) {
-      m00 = 0; m10 = 0; m01 = 0; m11 = 0; m20 = 0; m02 = 0;
-      for (const p of pixels) {
-          const weight = p.val; 
-          m00 += weight; m10 += weight * p.x; m01 += weight * p.y;
-          m11 += weight * p.x * p.y; m20 += weight * p.x * p.x; m02 += weight * p.y * p.y;
-      }
-  }
-
+  
   return calculateEllipseFromMoments(roi.id, m00, m10, m01, m11, m20, m02, startX, startY);
 };
 
@@ -134,342 +110,278 @@ export interface AnalysisOptions {
     threshold?: number;
     minRadius?: number;
     maxRadius?: number;
+    inputEllipses?: EllipseData[];
+    forcedOrientation?: number;
+    gridBasis?: { origin: EllipseData, xRef: EllipseData, yRef: EllipseData };
 }
 
-// Distance from point (px,py) to infinite line passing through (x1,y1) and (x2,y2)
-const distanceToLine = (px: number, py: number, x1: number, y1: number, x2: number, y2: number) => {
-    const A = px - x1;
-    const B = py - y1;
-    const C = x2 - x1;
-    const D = y2 - y1;
-    const len_sq = C * C + D * D;
-    if (len_sq === 0) return Math.sqrt(A*A + B*B);
-    const cross = C * B - D * A; // Z component of cross product
-    return Math.abs(cross) / Math.sqrt(len_sq);
-};
-
-// Robust line fit using RANSAC to find the "direction with most centers"
-const findDominantLine = (ellipses: EllipseData[], width: number, height: number) => {
-    if (ellipses.length < 2) return undefined;
-
-    const n = ellipses.length;
-    let bestCount = 0;
-    let bestError = Infinity;
-    let bestLine = { x1: 0, y1: 0, x2: 0, y2: 0 };
+/**
+ * Finds grid based on 3 user-selected points defining Origin, X-Axis, and Y-Axis.
+ * Uses inverse lattice basis transformation to assign (i, j) coordinates to points.
+ */
+const findGridFromBasis = (ellipses: EllipseData[], basis: { origin: EllipseData, xRef: EllipseData, yRef: EllipseData }) => {
+    const { origin, xRef, yRef } = basis;
     
-    // Heuristic threshold: Average radius or a fixed value like 20px
-    const avgRadius = ellipses.reduce((sum, e) => sum + Math.max(e.rx, e.ry), 0) / n;
-    const threshold = Math.max(avgRadius, 10);
-
-    // Limit iterations for performance if N is large, but for spots N is usually small (<100)
-    const pairs = [];
-    if (n < 50) {
-        for (let i = 0; i < n; i++) {
-            for (let j = i + 1; j < n; j++) pairs.push([i, j]);
-        }
-    } else {
-        for (let k = 0; k < 500; k++) {
-            const i = Math.floor(Math.random() * n);
-            let j = Math.floor(Math.random() * n);
-            while(i===j) j = Math.floor(Math.random() * n);
-            pairs.push([i, j]);
-        }
-    }
-
-    pairs.forEach(([i, j]) => {
-        const p1 = ellipses[i];
-        const p2 = ellipses[j];
-        
-        let inliers = 0;
-        let errorSum = 0;
-        
-        // Count inliers
-        for (let k = 0; k < n; k++) {
-            const dist = distanceToLine(ellipses[k].cx, ellipses[k].cy, p1.cx, p1.cy, p2.cx, p2.cy);
-            if (dist < threshold) {
-                inliers++;
-                errorSum += dist;
-            }
-        }
-        
-        // We prefer more inliers. If equal, prefer lower error (tighter line)
-        // Weighting: Count is dominant.
-        if (inliers > bestCount || (inliers === bestCount && errorSum < bestError)) {
-            bestCount = inliers;
-            bestError = errorSum;
-            bestLine = { x1: p1.cx, y1: p1.cy, x2: p2.cx, y2: p2.cy };
-        }
-    });
-
-    if (bestCount < 2) return undefined;
-
-    // Refine the line using Least Squares on the inliers
-    let sumX = 0, sumY = 0, sumXY = 0, sumXX = 0;
-    let count = 0;
-    let minX = Infinity, maxX = -Infinity;
+    // Basis Vectors
+    const ux = xRef.cx - origin.cx;
+    const uy = xRef.cy - origin.cy;
+    const vx = yRef.cx - origin.cx;
+    const vy = yRef.cy - origin.cy;
     
-    // Identify inliers again for LS
-    const inliers: EllipseData[] = [];
+    // Determinant for 2x2 Inverse
+    const det = ux * vy - uy * vx;
+    if (Math.abs(det) < 1e-6) return null; // Collinear basis
+
+    const rowsMap = new Map<number, EllipseData[]>();
+    const colsMap = new Map<number, EllipseData[]>();
+    
+    // Orientation is determined by the X-axis vector
+    const orientation = Math.atan2(uy, ux);
+    const cosT = Math.cos(orientation);
+    const sinT = Math.sin(orientation);
+    
+    // Grid Spacing scale for error tolerance
+    const spacingScale = (Math.sqrt(ux*ux + uy*uy) + Math.sqrt(vx*vx + vy*vy)) / 2;
+
     ellipses.forEach(e => {
-        const dist = distanceToLine(e.cx, e.cy, bestLine.x1, bestLine.y1, bestLine.x2, bestLine.y2);
-        if (dist < threshold) {
-            sumX += e.cx;
-            sumY += e.cy;
-            sumXY += e.cx * e.cy;
-            sumXX += e.cx * e.cx;
-            minX = Math.min(minX, e.cx);
-            maxX = Math.max(maxX, e.cx);
-            count++;
-            inliers.push(e);
+        const dx = e.cx - origin.cx;
+        const dy = e.cy - origin.cy;
+        
+        // Solve linear system: P = i*u + j*v  =>  [i, j]^T = M^-1 * P
+        const iVal = (vy * dx - vx * dy) / det;
+        const jVal = (-uy * dx + ux * dy) / det;
+        
+        const I = Math.round(iVal);
+        const J = Math.round(jVal);
+        
+        // Calculate error (distance from ideal lattice point)
+        const idealX = I * ux + J * vx;
+        const idealY = I * uy + J * vy;
+        const distErr = Math.sqrt((dx - idealX)**2 + (dy - idealY)**2);
+        
+        // If point is close enough to a virtual grid node (tolerance 40% of spacing)
+        if (distErr < spacingScale * 0.4) {
+             if (!rowsMap.has(J)) rowsMap.set(J, []);
+             rowsMap.get(J)!.push(e);
+             
+             if (!colsMap.has(I)) colsMap.set(I, []);
+             colsMap.get(I)!.push(e);
         }
     });
 
-    // Check if vertical
-    const isVertical = Math.abs(bestLine.x2 - bestLine.x1) < 1e-5;
-    
-    if (isVertical) {
-        const avgX = sumX / count;
-        let minY = Infinity, maxY = -Infinity;
-        inliers.forEach(e => {
-            minY = Math.min(minY, e.cy);
-            maxY = Math.max(maxY, e.cy);
-        });
-        return { x1: avgX, y1: minY, x2: avgX, y2: maxY, inliers, vx: 0, vy: 1 };
-    } else {
-        const slope = (count * sumXY - sumX * sumY) / (count * sumXX - sumX * sumX);
-        const intercept = (sumY - slope * sumX) / count;
-        
-        const y1 = slope * minX + intercept;
-        const y2 = slope * maxX + intercept;
-        
-        // Normalize direction vector
-        const len = Math.sqrt(1 + slope*slope);
-        
-        return { 
-            x1: minX, y1, x2: maxX, y2, 
-            inliers,
-            vx: 1/len, vy: slope/len
-        };
-    }
+    // Format output for analysis (Need 'avg' which is V-coord for rows, U-coord for cols in rotated frame)
+    const rows = Array.from(rowsMap.values()).map(points => {
+        // Calculate average V coordinate in the rotated frame
+        const sumV = points.reduce((acc, p) => acc + (-p.cx * sinT + p.cy * cosT), 0);
+        return { points, avg: sumV / points.length };
+    }).filter(r => r.points.length > 1);
+
+    const cols = Array.from(colsMap.values()).map(points => {
+        // Calculate average U coordinate in the rotated frame
+        const sumU = points.reduce((acc, p) => acc + (p.cx * cosT + p.cy * sinT), 0);
+        return { points, avg: sumU / points.length };
+    }).filter(c => c.points.length > 1);
+
+    return { orientation, rows, cols };
 };
 
 /**
- * Analyzes spots in the corrected image to provide discriminative metrics.
+ * Finds the optimal grid orientation by scoring candidate angles.
  */
+const findOptimalGrid = (ellipses: EllipseData[], radiusMean: number, forcedOrientation?: number) => {
+    if (ellipses.length < 2) return null;
+
+    let candidates: number[] = [];
+
+    if (forcedOrientation !== undefined) {
+        candidates = [forcedOrientation];
+    } else {
+        const angles = new Set<number>();
+        angles.add(0); 
+        angles.add(Math.PI / 2);
+
+        for(let i=0; i<ellipses.length; i++) {
+            for(let j=i+1; j<ellipses.length; j++) {
+                const dx = ellipses[j].cx - ellipses[i].cx;
+                const dy = ellipses[j].cy - ellipses[i].cy;
+                const dist = Math.sqrt(dx*dx + dy*dy);
+                if (dist > radiusMean * 1.5) { 
+                    let angle = Math.atan2(dy, dx);
+                    if (angle < -Math.PI/2) angle += Math.PI;
+                    if (angle >= Math.PI/2) angle -= Math.PI;
+                    angles.add(angle);
+                    let perp = angle + Math.PI/2;
+                    if (perp >= Math.PI/2) perp -= Math.PI;
+                    angles.add(perp);
+                }
+            }
+        }
+        candidates = Array.from(angles);
+    }
+    
+    let bestScore = -1;
+    let bestOrientation = 0;
+    let bestRows: { points: EllipseData[], avg: number }[] = [];
+    let bestCols: { points: EllipseData[], avg: number }[] = [];
+
+    const cluster1D = (vals: { val: number, item: EllipseData }[], gap: number) => {
+        if (vals.length === 0) return [];
+        vals.sort((a,b) => a.val - b.val);
+        const clusters: { points: EllipseData[], avg: number }[] = [];
+        let curPoints = [vals[0].item];
+        let curSum = vals[0].val;
+
+        for(let i=1; i<vals.length; i++) {
+            if (vals[i].val - vals[i-1].val < gap) {
+                curPoints.push(vals[i].item);
+                curSum += vals[i].val;
+            } else {
+                clusters.push({ points: curPoints, avg: curSum/curPoints.length });
+                curPoints = [vals[i].item];
+                curSum = vals[i].val;
+            }
+        }
+        clusters.push({ points: curPoints, avg: curSum/curPoints.length });
+        return clusters;
+    };
+
+    const gapThreshold = Math.max(radiusMean * 1.2, 10);
+
+    candidates.forEach(theta => {
+        const cos = Math.cos(theta);
+        const sin = Math.sin(theta);
+        const projected = ellipses.map(e => ({
+            item: e,
+            u: e.cx * cos + e.cy * sin,
+            v: -e.cx * sin + e.cy * cos
+        }));
+
+        const rows = cluster1D(projected.map(p => ({ val: p.v, item: p.item })), gapThreshold);
+        const cols = cluster1D(projected.map(p => ({ val: p.u, item: p.item })), gapThreshold);
+
+        let score = 0;
+        rows.forEach(r => { if(r.points.length > 1) score += Math.pow(r.points.length, 2); });
+        cols.forEach(c => { if(c.points.length > 1) score += Math.pow(c.points.length, 2); });
+
+        if (score > bestScore) {
+            bestScore = score;
+            bestOrientation = theta;
+            bestRows = rows.filter(r => r.points.length > 1);
+            bestCols = cols.filter(c => c.points.length > 1);
+        }
+    });
+
+    return { orientation: bestOrientation, rows: bestRows, cols: bestCols };
+};
+
 export const analyzeTransformedSpots = (
   ctx: CanvasRenderingContext2D,
   mode: ProcessingMode,
   optionsOrThreshold?: number | AnalysisOptions
 ): CorrectionAnalysisResult => {
-  const width = ctx.canvas.width;
-  const height = ctx.canvas.height;
-  
-  // Parse options
-  let thresholdOverride: number | undefined;
-  let minRadius = 2;
-  let maxRadius = Math.max(width, height) / 2;
-
+  let options: AnalysisOptions = {};
   if (typeof optionsOrThreshold === 'number') {
-      thresholdOverride = optionsOrThreshold;
-  } else if (typeof optionsOrThreshold === 'object') {
-      if (optionsOrThreshold.threshold !== undefined) thresholdOverride = optionsOrThreshold.threshold;
-      if (optionsOrThreshold.minRadius !== undefined) minRadius = optionsOrThreshold.minRadius;
-      if (optionsOrThreshold.maxRadius !== undefined) maxRadius = optionsOrThreshold.maxRadius;
+    options = { threshold: optionsOrThreshold };
+  } else if (optionsOrThreshold) {
+    options = optionsOrThreshold;
   }
-  
-  // 1. Thresholding
-  let threshold = 128;
-  if (thresholdOverride !== undefined) {
-      threshold = thresholdOverride;
+
+  let ellipses: EllipseData[] = [];
+  if (options.inputEllipses && options.inputEllipses.length > 0) {
+      ellipses = options.inputEllipses;
   } else {
-      // Auto-Calculate Threshold based on image statistics
-      const imageData = ctx.getImageData(0, 0, width, height);
-      let minLum = 255, maxLum = 0;
-      for (let i = 0; i < imageData.data.length; i += 16) {
-          const l = getLuminance(imageData.data[i], imageData.data[i+1], imageData.data[i+2]);
-          if (l < minLum) minLum = l;
-          if (l > maxLum) maxLum = l;
-      }
-      threshold = (minLum + maxLum) / 2;
+      const { ellipses: detected } = autoDetectEllipses(ctx, mode, options.threshold || 128, options.minRadius || 2, options.maxRadius || 100, false);
+      ellipses = detected;
   }
 
-  // 2. Detect with threshold and radius limits
-  const { ellipses } = autoDetectEllipses(ctx, mode, threshold, minRadius, maxRadius, false);
-  
-  const emptyMetrics: CorrectionMetrics = { 
-    meanRoundness: 0,
-    radiusMean: 0,
-    radiusStdDev: 0,
-    radiusCV: 1,
-    spacingMean: 0,
-    spacingStdDev: 0,
-    spacingCV: 1,
-    linearityRMS: 0,
-    linearityRelative: 1,
-    scoreRoundness: 0,
-    scoreLinearity: 0,
-    scoreConsistency: 0,
-    finalScore: 0,
-    sampleCount: ellipses.length 
-  };
+  const emptyMetrics: CorrectionMetrics = { meanRoundness: 0, radiusMean: 0, radiusStdDev: 0, radiusCV: 1, spacingMean: 0, spacingStdDev: 0, spacingCV: 1, linearityRMS: 0, linearityRelative: 1, scoreRoundness: 0, scoreLinearity: 0, scoreConsistency: 0, finalScore: 0, sampleCount: ellipses.length };
+  if (ellipses.length < 2) return { metrics: emptyMetrics, ellipses };
 
-  if (ellipses.length < 2) {
-    return { metrics: emptyMetrics, ellipses };
-  }
-
-  // 1. Roundness Analysis
-  let totalRoundness = 0;
-  const radii: number[] = [];
-  
+  // Basic Metrics
+  let totalRoundness = 0; const radii: number[] = [];
   ellipses.forEach(e => {
-    const roundness = Math.min(e.rx, e.ry) / Math.max(e.rx, e.ry);
-    totalRoundness += roundness;
+    totalRoundness += Math.min(e.rx, e.ry) / Math.max(e.rx, e.ry);
     radii.push((e.rx + e.ry) / 2);
   });
-
   const meanRoundness = totalRoundness / ellipses.length;
-
-  // 2. Size Consistency (Dispersion)
   const radiusMean = radii.reduce((a, b) => a + b, 0) / radii.length;
-  const radiusVar = radii.reduce((a, b) => a + Math.pow(b - radiusMean, 2), 0) / radii.length;
-  const radiusStdDev = Math.sqrt(radiusVar);
-  const radiusCV = radiusMean > 0 ? radiusStdDev / radiusMean : 1;
+  const radiusCV = radiusMean > 0 ? Math.sqrt(radii.reduce((a, b) => a + Math.pow(b-radiusMean, 2), 0)/radii.length)/radiusMean : 1;
 
+  // Grid Detection (Try basis first, then auto/forced-orientation)
+  let gridInfo;
+  if (options.gridBasis) {
+      gridInfo = findGridFromBasis(ellipses, options.gridBasis);
+  } else {
+      gridInfo = findOptimalGrid(ellipses, radiusMean, options.forcedOrientation);
+  }
 
-  // 3. Linearity Analysis using RANSAC Grid Orientation
-  const domLine = findDominantLine(ellipses, width, height);
-  
-  // Default values if line finding fails
   let linearityRMS = 0;
-  let vx = 1, vy = 0; // Default Horizontal
-  let linePoints = undefined;
-  
-  if (domLine) {
-      linePoints = { x1: domLine.x1, y1: domLine.y1, x2: domLine.x2, y2: domLine.y2 };
-      vx = domLine.vx;
-      vy = domLine.vy;
+  let grid = undefined;
+  let bestFitLine = undefined;
+  let vx = 1, vy = 0;
 
-      // Calculate Grid Linearity (Grid-Aware)
-      // Rotate points so the dominant line is horizontal
-      const cosT = vx; 
-      const sinT = vy;
-      
-      const rotated = ellipses.map(e => ({
-          ...e,
-          // We rotate by -angle. 
-          // New X = x * cos + y * sin (Projection onto line)
-          // New Y = -x * sin + y * cos (Projection onto normal / Distance from line)
-          u: e.cx * cosT + e.cy * sinT,
-          v: -e.cx * sinT + e.cy * cosT
-      }));
+  if (gridInfo && (gridInfo.rows.length > 0 || gridInfo.cols.length > 0)) {
+      const { orientation, rows, cols } = gridInfo;
+      const cosT = Math.cos(orientation);
+      const sinT = Math.sin(orientation);
+      vx = cosT; vy = sinT;
 
-      // Find rows by clustering V coordinates
-      // Sort by V
-      rotated.sort((a, b) => a.v - b.v);
-      
-      const rows: typeof rotated[] = [];
-      if (rotated.length > 0) {
-          let currentRow = [rotated[0]];
-          const rowGapThreshold = radiusMean; // If gap > radius, new row
-          
-          for (let i = 1; i < rotated.length; i++) {
-              if (Math.abs(rotated[i].v - rotated[i-1].v) < rowGapThreshold) {
-                  currentRow.push(rotated[i]);
-              } else {
-                  rows.push(currentRow);
-                  currentRow = [rotated[i]];
-              }
-          }
-          rows.push(currentRow);
-      }
-
-      // Calculate RMS of V within each row (straightness of rows)
-      let sumSquaredResiduals = 0;
-      let totalPoints = 0;
-      
-      rows.forEach(row => {
-          if (row.length < 2) return; // Ignore single points
-          const meanV = row.reduce((sum, p) => sum + p.v, 0) / row.length;
-          row.forEach(p => {
-              sumSquaredResiduals += Math.pow(p.v - meanV, 2);
+      let sumSq = 0, totalP = 0;
+      rows.forEach(r => {
+          r.points.forEach(p => {
+               const v = -p.cx * sinT + p.cy * cosT;
+               sumSq += Math.pow(v - r.avg, 2);
           });
-          totalPoints += row.length;
+          totalP += r.points.length;
+      });
+      if (totalP > 0) linearityRMS = Math.sqrt(sumSq / totalP);
+
+      const rowLines = rows.map(r => {
+          const us = r.points.map(p => p.cx * cosT + p.cy * sinT);
+          const minU = Math.min(...us) - radiusMean * 2;
+          const maxU = Math.max(...us) + radiusMean * 2;
+          return { 
+              x1: minU * cosT - r.avg * sinT,
+              y1: minU * sinT + r.avg * cosT,
+              x2: maxU * cosT - r.avg * sinT,
+              y2: maxU * sinT + r.avg * cosT
+          };
       });
 
-      if (totalPoints > 0) {
-          linearityRMS = Math.sqrt(sumSquaredResiduals / totalPoints);
+      const colLines = cols.map(c => {
+          const vs = c.points.map(p => -p.cx * sinT + p.cy * cosT);
+          const minV = Math.min(...vs) - radiusMean * 2;
+          const maxV = Math.max(...vs) + radiusMean * 2;
+          return { 
+              x1: c.avg * cosT - minV * sinT,
+              y1: c.avg * sinT + minV * cosT,
+              x2: c.avg * cosT - maxV * sinT,
+              y2: c.avg * sinT + maxV * cosT
+          };
+      });
+
+      grid = { rows: rowLines, cols: colLines };
+      if (rowLines.length > 0) {
+          const bestRowIdx = rows.reduce((maxI, r, i) => r.points.length > rows[maxI].points.length ? i : maxI, 0);
+          bestFitLine = rowLines[bestRowIdx];
       }
   }
 
-  const linearityRelative = radiusMean > 0 ? linearityRMS / radiusMean : 1;
-
-  // 4. Spacing Analysis (Along the dominant direction)
-  let spacingMean = 0;
-  let spacingStdDev = 0;
-  let spacingCV = 0;
-
-  // Sort by projection onto dominant axis (U coordinate)
-  const sortedEllipses = [...ellipses].map(e => ({
-      ...e,
-      t: e.cx * vx + e.cy * vy
-  })).sort((a, b) => a.t - b.t);
-
-  // We should only measure spacing between NEIGHBORS in the grid structure.
-  // Using the simple sorted list works if it's a single line. 
-  // If it's a grid, we should calculate spacing within rows/cols.
-  // Let's use the 'rows' logic implicitly by checking spatial proximity.
-  
   const spacings: number[] = [];
-  for (let i = 0; i < sortedEllipses.length - 1; i++) {
-      const p1 = sortedEllipses[i];
-      const p2 = sortedEllipses[i+1];
-      const dist = Math.sqrt(Math.pow(p2.cx - p1.cx, 2) + Math.pow(p2.cy - p1.cy, 2));
-      // Only count if they are close enough to be neighbors (e.g. < 5 * radius)
-      if (dist < radiusMean * 5) {
-          spacings.push(dist);
-      }
+  const sorted = [...ellipses].map(e => ({ ...e, t: e.cx*vx + e.cy*vy })).sort((a,b)=>a.t-b.t);
+  for (let i = 0; i < sorted.length-1; i++) {
+      const dist = Math.sqrt(Math.pow(sorted[i+1].cx-sorted[i].cx, 2)+Math.pow(sorted[i+1].cy-sorted[i].cy, 2));
+      if (dist < radiusMean * 5) spacings.push(dist);
   }
+  const spacingMean = spacings.length ? spacings.reduce((a,b)=>a+b,0)/spacings.length : 0;
+  const spacingCV = spacingMean > 0 ? Math.sqrt(spacings.reduce((a,b)=>a+Math.pow(b-spacingMean,2),0)/spacings.length)/spacingMean : 1;
 
-  if (spacings.length > 0) {
-      spacingMean = spacings.reduce((a, b) => a + b, 0) / spacings.length;
-      const spacingVar = spacings.reduce((a, b) => a + Math.pow(b - spacingMean, 2), 0) / spacings.length;
-      spacingStdDev = Math.sqrt(spacingVar);
-      spacingCV = spacingMean > 0 ? spacingStdDev / spacingMean : 1;
-  }
+  const sR = Math.round(100 * Math.exp(-3 * (1 - meanRoundness)));
+  const sL = Math.round(100 * Math.exp(-5 * (radiusMean > 0 ? linearityRMS/radiusMean : 1)));
+  const sC = Math.round(100 * Math.exp(-3 * (radiusCV + spacingCV)/2));
+  const finalScore = Math.round(0.4 * sR + 0.35 * sL + 0.25 * sC);
 
-  // 6. Exponential Decay Scoring
-  const scoreRoundness = Math.round(100 * Math.exp(-3 * (1 - meanRoundness)));
-  // Linearity score: RMS error of 10% radius -> ~60 score. 
-  const scoreLinearity = Math.round(100 * Math.exp(-5 * linearityRelative));
-  
-  // Consistency score
-  const combinedCV = (radiusCV + spacingCV) / 2;
-  const scoreConsistency = Math.round(100 * Math.exp(-3 * combinedCV));
-
-  const finalScore = Math.round(
-      0.40 * scoreRoundness + 
-      0.35 * scoreLinearity + 
-      0.25 * scoreConsistency
-  );
-
-  const metrics = {
-    meanRoundness,
-    radiusMean,
-    radiusStdDev,
-    radiusCV,
-    spacingMean,
-    spacingStdDev,
-    spacingCV,
-    linearityRMS,
-    linearityRelative,
-    scoreRoundness,
-    scoreLinearity,
-    scoreConsistency,
-    finalScore,
-    sampleCount: ellipses.length
-  };
-
-  return { metrics, ellipses: sortedEllipses, bestFitLine: linePoints };
+  return { metrics: { meanRoundness, radiusMean, radiusStdDev: radiusMean*radiusCV, radiusCV, spacingMean, spacingStdDev: spacingMean*spacingCV, spacingCV, linearityRMS, linearityRelative: radiusMean>0?linearityRMS/radiusMean:1, scoreRoundness: sR, scoreLinearity: sL, scoreConsistency: sC, finalScore, sampleCount: ellipses.length }, ellipses: sorted, bestFitLine, grid };
 };
 
 export const autoDetectEllipses = (
@@ -480,105 +392,47 @@ export const autoDetectEllipses = (
   maxRadius: number,
   enableFiltering: boolean = true
 ): { ellipses: EllipseData[], rois: ROI[] } => {
-  const width = ctx.canvas.width;
-  const height = ctx.canvas.height;
+  const width = ctx.canvas.width, height = ctx.canvas.height;
   const imageData = ctx.getImageData(0, 0, width, height);
   const data = imageData.data;
-  
   const visited = new Uint8Array(width * height);
   const detected: EllipseData[] = [];
-  
   const isTarget = (idx: number) => {
-    const r = data[idx];
-    const g = data[idx + 1];
-    const b = data[idx + 2];
-    const lum = getLuminance(r, g, b);
-    return mode === 'dark' ? lum < threshold : lum > threshold;
+    const l = getLuminance(data[idx], data[idx + 1], data[idx + 2]);
+    return mode === 'dark' ? l < threshold : l > threshold;
   };
-
-  const stack: number[] = [];
 
   for (let y = 0; y < height; y++) {
     for (let x = 0; x < width; x++) {
       const pos = y * width + x;
-      if (visited[pos]) continue;
-      
-      if (isTarget(pos * 4)) {
-        stack.push(pos);
-        visited[pos] = 1;
-        let m00 = 0, m10 = 0, m01 = 0, m11 = 0, m20 = 0, m02 = 0;
-        let minX = x, maxX = x, minY = y, maxY = y;
-        let count = 0;
-
-        while (stack.length > 0) {
-          const curr = stack.pop()!;
-          const cy = Math.floor(curr / width);
-          const cx = curr % width;
-          if (cx < minX) minX = cx;
-          if (cx > maxX) maxX = cx;
-          if (cy < minY) minY = cy;
-          if (cy > maxY) maxY = cy;
-
-          m00 += 1; m10 += cx; m01 += cy;
-          m11 += cx * cy; m20 += cx * cx; m02 += cy * cy;
-          count++;
-
-          const neighbors = [curr - 1, curr + 1, curr - width, curr + width];
-          for (const n of neighbors) {
-            if (n >= 0 && n < width * height && !visited[n]) {
-              if ((curr % width === 0 && n === curr - 1) || (curr % width === width - 1 && n === curr + 1)) continue;
-              if (isTarget(n * 4)) {
-                visited[n] = 1;
-                stack.push(n);
-              }
+      if (visited[pos] || !isTarget(pos * 4)) continue;
+      const stack = [pos]; visited[pos] = 1;
+      let m00 = 0, m10 = 0, m01 = 0, m11 = 0, m20 = 0, m02 = 0, count = 0;
+      while (stack.length > 0) {
+        const curr = stack.pop()!;
+        const cy = Math.floor(curr / width), cx = curr % width;
+        m00++; m10 += cx; m01 += cy; m11 += cx*cy; m20 += cx*cx; m02 += cy*cy; count++;
+        [curr-1, curr+1, curr-width, curr+width].forEach(n => {
+          if (n >= 0 && n < width*height && !visited[n] && isTarget(n*4)) {
+            if (!((curr%width===0 && n===curr-1) || (curr%width===width-1 && n===curr+1))) {
+                visited[n] = 1; stack.push(n);
             }
           }
-        }
-        
-        // Lowered minimum pixel count from 10 to 5 to catch small dots
-        if (count > 5 && count < (width * height * 0.4)) {
-           const rawEllipse = calculateEllipseFromMoments(0, m00, m10, m01, m11, m20, m02, 0, 0);
-           if (rawEllipse.rx >= minRadius && rawEllipse.rx <= maxRadius && 
-               rawEllipse.ry >= minRadius && rawEllipse.ry <= maxRadius) {
-               const aspectRatio = Math.max(rawEllipse.rx, rawEllipse.ry) / Math.min(rawEllipse.rx, rawEllipse.ry);
-               if (aspectRatio < 5) detected.push(rawEllipse);
-           }
-        }
+        });
+      }
+      if (count > 5) {
+         const e = calculateEllipseFromMoments(0, m00, m10, m01, m11, m20, m02, 0, 0);
+         if (e.rx >= minRadius && e.rx <= maxRadius && e.ry >= minRadius && e.ry <= maxRadius) detected.push(e);
       }
     }
   }
-
-  detected.sort((a, b) => a.cy - b.cy);
-  if (detected.length > 0) {
-      const sorted: EllipseData[] = [];
-      let currentRow: EllipseData[] = [detected[0]];
-      const rowTolerance = Math.max(detected[0].ry, 10);
-      for (let i = 1; i < detected.length; i++) {
-          const curr = detected[i];
-          const avgY = currentRow.reduce((sum, e) => sum + e.cy, 0) / currentRow.length;
-          if (Math.abs(curr.cy - avgY) < rowTolerance * 1.5) {
-              currentRow.push(curr);
-          } else {
-              currentRow.sort((a, b) => a.cx - b.cx);
-              sorted.push(...currentRow);
-              currentRow = [curr];
-          }
-      }
-      currentRow.sort((a, b) => a.cx - b.cx);
-      sorted.push(...currentRow);
-      detected.length = 0;
-      detected.push(...sorted);
-  }
-
   const finalSource = enableFiltering ? filterEllipsesByTrend(detected) : detected;
-  
   const finalEllipses: EllipseData[] = [];
   const finalRois: ROI[] = [];
   finalSource.forEach((d, idx) => {
-      const newId = Date.now() + idx; 
-      finalEllipses.push({ ...d, id: newId });
-      finalRois.push({ id: newId, cx: d.cx, cy: d.cy, rx: d.rx * 1.2, ry: d.ry * 1.2, rotation: d.angle });
+      const id = Date.now() + idx;
+      finalEllipses.push({ ...d, id });
+      finalRois.push({ id, cx: d.cx, cy: d.cy, rx: d.rx * 1.5, ry: d.ry * 1.5, rotation: d.angle });
   });
-
   return { ellipses: finalEllipses, rois: finalRois };
 };
