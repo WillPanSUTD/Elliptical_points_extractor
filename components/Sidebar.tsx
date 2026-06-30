@@ -81,10 +81,10 @@ export const Sidebar: React.FC<SidebarProps> = ({
       <div className="p-4 border-b border-slate-700 bg-slate-900">
         <h1 className="text-xl font-bold text-blue-400 flex items-center gap-2">
           <Calculator className="w-5 h-5" />
-          ROI Extractor
+          Elliptical Points
         </h1>
         <p className="text-xs text-slate-400 mt-1">
-          Manual ellipse or auto calibration.
+          Sector-scan calibration and unwarping.
         </p>
       </div>
 

@@ -1,8 +1,21 @@
 {
-  "name": "ellipse-roi-extractor",
+  "name": "elliptical-points-extractor",
   "private": true,
-  "version": "0.0.0",
+  "version": "0.1.0",
+  "description": "Interactive elliptical point extraction and sector-scan calibration tool for rotating line-scan imaging systems.",
   "type": "module",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/WillPanSUTD/Elliptical_points_extractor.git"
+  },
+  "keywords": [
+    "line-scan",
+    "calibration",
+    "ellipse-detection",
+    "sector-scan",
+    "image-unwarping"
+  ],
+  "license": "UNLICENSED",
   "scripts": {
     "dev": "vite",
     "build": "vite build",
